@@ -1,2 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Lo-lo-ReaPack" />
+<index version="1" name="Lo-lo-ReaPack" commit="2ee8f9088329e54d9bcc76a118896b8a5e50612f">
+  <category name="Lo-lo - JSFX/analysis">
+    <reapack name="LSpectrum 4.5dB Analyzer.jsfx" type="effect" desc="LSpectrum 4.5dB Analyzer (JSFX + Accessible Lua)">
+      <version name="6.6" author="Lo-lo and GPT" time="2026-11-05T23:56:02Z">
+        <changelog><![CDATA[First ReaPack publication of the complete analyzer (JSFX, accessible Lua, HTML guide).]]></changelog>
+        <source>https://github.com/Lo-lo78/Lo-lo-ReaPack/raw/2ee8f9088329e54d9bcc76a118896b8a5e50612f/Lo-lo%20-%20JSFX/analysis/LSpectrum%204.5dB%20Analyzer.jsfx</source>
+        <source main="main" type="script" file="../../Lo-lo - Scripts/analysis/LSpectrum 4.5dB Analyzer.lua">https://github.com/Lo-lo78/Lo-lo-ReaPack/raw/2ee8f9088329e54d9bcc76a118896b8a5e50612f/Lo-lo%20-%20Scripts/analysis/LSpectrum%204.5dB%20Analyzer.lua</source>
+        <source file="LSpectrum 4.5dB Analyzer — Full Quick Guide.html">https://github.com/Lo-lo78/Lo-lo-ReaPack/raw/2ee8f9088329e54d9bcc76a118896b8a5e50612f/Lo-lo%20-%20JSFX/analysis/LSpectrum%204.5dB%20Analyzer%20%E2%80%94%20Full%20Quick%20Guide.html</source>
+      </version>
+    </reapack>
+  </category>
+</index>
