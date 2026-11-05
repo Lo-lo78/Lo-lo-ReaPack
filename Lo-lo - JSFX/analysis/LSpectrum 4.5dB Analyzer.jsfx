@@ -1,0 +1,433 @@
+// @description LSpectrum 4.5dB Analyzer (JSFX + Accessible Lua)
+// @version 6.6
+// @author Lo-lo and GPT
+// @changelog
+//   First ReaPack publication of the complete analyzer (JSFX, accessible Lua, HTML guide).
+// @provides
+//   [script main] ../../Lo-lo - Scripts/analysis/LSpectrum 4.5dB Analyzer.lua
+//   LSpectrum 4.5dB Analyzer — Full Quick Guide.html
+
+desc:LSpectrum 4.5dB Analyzer
+
+in_pin:Input L
+in_pin:Input R
+out_pin:Output L
+out_pin:Output R
+
+// ----------------------------------------------------------------------
+// Slider di uscita (32 bande logaritmiche) - DIFFERENZA dalla curva 4.5
+// Ogni slider è in dB: -24..+24 (negativo = sotto curva, positivo = sopra)
+// ----------------------------------------------------------------------
+slider1:0<-24,24,0.1>Band 1 (22.3 Hz) diff dB
+slider2:0<-24,24,0.1>Band 2 (27.6 Hz) diff dB
+slider3:0<-24,24,0.1>Band 3 (34.3 Hz) diff dB
+slider4:0<-24,24,0.1>Band 4 (42.6 Hz) diff dB
+slider5:0<-24,24,0.1>Band 5 (52.8 Hz) diff dB
+slider6:0<-24,24,0.1>Band 6 (65.6 Hz) diff dB
+slider7:0<-24,24,0.1>Band 7 (81.4 Hz) diff dB
+slider8:0<-24,24,0.1>Band 8 (101 Hz) diff dB
+slider9:0<-24,24,0.1>Band 9 (125 Hz) diff dB
+slider10:0<-24,24,0.1>Band 10 (155 Hz) diff dB
+slider11:0<-24,24,0.1>Band 11 (193 Hz) diff dB
+slider12:0<-24,24,0.1>Band 12 (239 Hz) diff dB
+slider13:0<-24,24,0.1>Band 13 (297 Hz) diff dB
+slider14:0<-24,24,0.1>Band 14 (369 Hz) diff dB
+slider15:0<-24,24,0.1>Band 15 (458 Hz) diff dB
+slider16:0<-24,24,0.1>Band 16 (568 Hz) diff dB
+
+slider17:0<-24,24,0.1>Band 17 (705 Hz) diff dB
+slider18:0<-24,24,0.1>Band 18 (874 Hz) diff dB
+slider19:0<-24,24,0.1>Band 19 (1085 Hz) diff dB
+slider20:0<-24,24,0.1>Band 20 (1346 Hz) diff dB
+slider21:0<-24,24,0.1>Band 21 (1671 Hz) diff dB
+slider22:0<-24,24,0.1>Band 22 (2073 Hz) diff dB
+slider23:0<-24,24,0.1>Band 23 (2573 Hz) diff dB
+slider24:0<-24,24,0.1>Band 24 (3193 Hz) diff dB
+slider25:0<-24,24,0.1>Band 25 (3962 Hz) diff dB
+slider26:0<-24,24,0.1>Band 26 (4916 Hz) diff dB
+slider27:0<-24,24,0.1>Band 27 (6101 Hz) diff dB
+slider28:0<-24,24,0.1>Band 28 (7571 Hz) diff dB
+slider29:0<-24,24,0.1>Band 29 (9395 Hz) diff dB
+slider30:0<-24,24,0.1>Band 30 (11659 Hz) diff dB
+slider31:0<-24,24,0.1>Band 31 (14468 Hz) diff dB
+slider32:0<-24,24,0.1>Band 32 (17954 Hz) diff dB
+
+slider33:-120<-120,0,1>Ref Noise Level (dB)
+
+slider34:4<0,6,1{Flat 0dB (Reference),Pop Soft 2dB,Old Pop / Rock 3dB,Modern Pop 4dB,EDM / Synth Pop 4.5dB,Trap / Urban 5dB,Lo-Fi Warm 6dB}>Target Curve (Genre + Slope)
+
+slider35:0<0,1,1{Off,On}>Tone Enable
+slider36:440<20,20000,1> Tone Frequency (Hz)
+slider37:-12<-60,0,1> Tone Volume (dB)
+
+
+// ----------------------------------------------------------------------
+// Costanti e layout memoria
+// ----------------------------------------------------------------------
+@init
+
+tone_phase = 0;
+two_pi = 2*$pi;
+
+
+// === Noise generator state ===
+brown_prev = 0;
+pink_b0 = 0;
+pink_b1 = 0;
+pink_b2 = 0;
+pink_b3 = 0;
+pink_b4 = 0;
+pink_b5 = 0;
+
+
+bands = 32;
+FFT_SIZE = 32768;
+HALF_FFT = FFT_SIZE/2;
+
+// slope della curva target fra brown e pink: 4.5 dB per ottava
+// slope_db_per_oct = 4.5;   // rimosso, ora viene scelto da slider34
+
+// frequenza di riferimento per la curva (pivot teorico)
+freq_ref = 1000;
+
+// per log2(x)
+inv_log2 = 1/log(2);
+
+// --- layout memoria: buffer FFT + finestra + tabelle bande ---
+buf      = 0;                // [0 .. FFT_SIZE-1] campioni / FFT data
+win      = FFT_SIZE;
+band_lo  = FFT_SIZE*2;
+band_hi  = band_lo + bands;
+band_fc  = band_hi + bands;
+band_meas = band_fc + bands;
+band_diff = band_meas + bands;
+
+// --- precompute finestra Hann ---
+i = 0;
+loop(FFT_SIZE,
+  win[i] = 0.5 - 0.5 * cos(2*$pi * i / (FFT_SIZE-1));
+  i += 1;
+);
+
+// --- definizione bande logaritmiche 20 Hz - 20 kHz ---
+f_min = 20;
+f_max = 20000;
+range_log2 = log(f_max/f_min) * inv_log2;
+
+b = 0;
+pivot_band = 0;
+best_pivot_err = 1000000000000; // valore grande
+
+
+loop(bands,
+  // frazione nella scala log
+  frac_lo = b / bands;
+  frac_hi = (b+1) / bands;
+
+  f_lo = f_min * pow(2, frac_lo * range_log2);
+  f_hi = f_min * pow(2, frac_hi * range_log2);
+
+  // freq centrale = media geometrica
+  f_c = sqrt(f_lo * f_hi);
+  band_fc[b] = f_c;
+
+  // bin FFT corrispondenti
+  bin_lo = floor(f_lo * FFT_SIZE / srate);
+  bin_hi = ceil(f_hi * FFT_SIZE / srate);
+
+  (bin_lo < 1)      ? bin_lo = 1;      // evita DC puro
+  (bin_hi >= HALF_FFT) ? bin_hi = HALF_FFT-1;
+
+  (bin_hi <= bin_lo) ? bin_hi = bin_lo+1;
+
+  band_lo[b] = bin_lo;
+  band_hi[b] = bin_hi;
+
+  // trova banda pivot più vicina a 1000 Hz
+  err = abs(f_c - freq_ref);
+  (err < best_pivot_err) ? (
+    best_pivot_err = err;
+    pivot_band = b;
+  );
+
+  b += 1;
+);
+
+// posizione scrittura nel buffer
+write_pos = 0;
+
+
+
+@slider
+
+// imposta la pendenza della curva target in base allo slider34
+slider34 == 0 ? slope_db_per_oct = 0;     // Flat 0dB (Reference)
+slider34 == 1 ? slope_db_per_oct = 2;     // Pop Soft 2dB
+slider34 == 2 ? slope_db_per_oct = 3;     // Old Pop / Rock 3dB
+slider34 == 3 ? slope_db_per_oct = 4;     // Modern Pop 4dB
+slider34 == 4 ? slope_db_per_oct = 4.5;   // EDM / Synth Pop 4.5dB
+slider34 == 5 ? slope_db_per_oct = 5;     // Trap / Urban 5dB
+slider34 == 6 ? slope_db_per_oct = 6;     // Lo-Fi Warm 6dB
+
+@sample
+
+// pass-through audio: non modifichiamo il segnale
+// (puoi cambiare se vuoi un canale dry diverso, ma ora è neutro)
+spl0_out = spl0;
+spl1_out = spl1;
+
+// --- accumula nel buffer mono (media L/R) ---
+mono = 0.5 * ( (spl0_out + noise45_L) + (spl1_out + noise45_R) );
+
+buf[write_pos] = mono;
+write_pos += 1;
+
+// --- quando il buffer è pieno, eseguiamo analisi ---
+(write_pos >= FFT_SIZE) ? (
+
+  // === RMS globale per capire se c’è segnale ===
+  tot = 0;
+  i = 0;
+  loop(FFT_SIZE,
+      tot += buf[i] * buf[i];
+      i += 1;
+  );
+
+  global_rms = sqrt(tot / FFT_SIZE);
+  global_db  = (global_rms > 0) ? (20*log10(global_rms)) : -300;
+
+  // === Se sotto soglia → nessun segnale ===
+  (global_db < -140) ? (
+
+        slider1 = -150;
+        slider2 = -150;
+        slider3 = -150;
+        slider4 = -150;
+        slider5 = -150;
+        slider6 = -150;
+        slider7 = -150;
+        slider8 = -150;
+        slider9 = -150;
+        slider10 = -150;
+        slider11 = -150;
+        slider12 = -150;
+        slider13 = -150;
+        slider14 = -150;
+        slider15 = -150;
+        slider16 = -150;
+        slider17 = -150;
+        slider18 = -150;
+        slider19 = -150;
+        slider20 = -150;
+        slider21 = -150;
+        slider22 = -150;
+        slider23 = -150;
+        slider24 = -150;
+        slider25 = -150;
+        slider26 = -150;
+        slider27 = -150;
+        slider28 = -150;
+        slider29 = -150;
+        slider30 = -150;
+        slider31 = -150;
+        slider32 = -150;
+
+        // reset buffer e salta l’FFT
+        write_pos = 0;
+
+        // ripristina audio e esci
+        spl0 = spl0_out;
+        spl1 = spl1_out;
+
+        return;
+  );
+
+  
+  // FFT reale
+  fft_real(buf, FFT_SIZE);
+  fft_permute(buf, HALF_FFT);
+
+  // --- misura livello per ogni banda ---
+  b = 0;
+  loop(bands,
+    bl = band_lo[b];
+    bh = band_hi[b];
+
+    sum_mag = 0;
+    count = 0;
+
+    k = bl;
+    loop(bh - bl + 1,
+      // layout complesso: re = buf[2*k], im = buf[2*k+1]
+      re = buf[2*k];
+      im = buf[2*k+1];
+      mag2 = re*re + im*im;
+
+      sum_mag += mag2;
+      count += 1;
+
+      k += 1;
+    );
+
+    (count > 0) ? (
+      rms = sqrt(sum_mag / count);
+      (rms > 0) ? (
+        band_meas[b] = 20*log10(rms);
+      ) : (
+        band_meas[b] = -150;
+      );
+    ) : (
+      band_meas[b] = -150;
+    );
+
+    b += 1;
+  );
+
+  // --- costruisci curva target allineata sulla banda pivot ---
+  meas_pivot = band_meas[pivot_band];
+  fc_pivot   = band_fc[pivot_band];
+
+  // base_level tale che la curva passi per la banda pivot
+  // target_pivot = base_level - slope*log2(fc_pivot/freq_ref) = meas_pivot
+  base_level = meas_pivot + slope_db_per_oct * log(fc_pivot/freq_ref) * inv_log2;
+
+  // calcola differenza per ogni banda e scrivi sugli slider
+  b = 0;
+  loop(bands,
+    fc = band_fc[b];
+    target_db = base_level - slope_db_per_oct * log(fc/freq_ref) * inv_log2;
+    diff_db   = band_meas[b] - target_db;
+
+    band_diff[b] = diff_db;
+
+    // scrivi sui 32 slider (uno per banda)
+    b == 0  ? slider1  = diff_db;
+    b == 1  ? slider2  = diff_db;
+    b == 2  ? slider3  = diff_db;
+    b == 3  ? slider4  = diff_db;
+    b == 4  ? slider5  = diff_db;
+    b == 5  ? slider6  = diff_db;
+    b == 6  ? slider7  = diff_db;
+    b == 7  ? slider8  = diff_db;
+    b == 8  ? slider9  = diff_db;
+    b == 9  ? slider10 = diff_db;
+    b == 10 ? slider11 = diff_db;
+    b == 11 ? slider12 = diff_db;
+    b == 12 ? slider13 = diff_db;
+    b == 13 ? slider14 = diff_db;
+    b == 14 ? slider15 = diff_db;
+    b == 15 ? slider16 = diff_db;
+    b == 16 ? slider17 = diff_db;
+    b == 17 ? slider18 = diff_db;
+    b == 18 ? slider19 = diff_db;
+    b == 19 ? slider20 = diff_db;
+    b == 20 ? slider21 = diff_db;
+    b == 21 ? slider22 = diff_db;
+    b == 22 ? slider23 = diff_db;
+    b == 23 ? slider24 = diff_db;
+    b == 24 ? slider25 = diff_db;
+    b == 25 ? slider26 = diff_db;
+    b == 26 ? slider27 = diff_db;
+    b == 27 ? slider28 = diff_db;
+    b == 28 ? slider29 = diff_db;
+    b == 29 ? slider30 = diff_db;
+    b == 30 ? slider31 = diff_db;
+    b == 31 ? slider32 = diff_db;
+
+    b += 1;
+  );
+
+  // ricomincia a riempire il buffer per il prossimo blocco
+  write_pos = 0;
+);
+
+
+// ripristina uscita audio
+spl0 = spl0_out;
+spl1 = spl1_out;
+
+// =====================================================
+// === Noise Reference Output Stereo (slider33: level dB)
+// =====================================================
+
+(slider33 > -120) ? (
+
+    // Converti dB in linear
+    noise_amp = 10^(slider33/20);
+
+    //--------------------------------------------------
+    // LEFT CHANNEL
+    //--------------------------------------------------
+
+    // White L
+    whiteL = rand(2)-1;
+
+    // Brown L
+    brownL = brown_prev_L + whiteL*0.02;
+    (brownL > 1) ? brownL = 1;
+    (brownL < -1) ? brownL = -1;
+    brown_prev_L = brownL;
+
+    // Pink L
+    pinkL_b0 = 0.99765*pinkL_b0 + whiteL*0.0990460;
+    pinkL_b1 = 0.96300*pinkL_b1 + whiteL*0.2965164;
+    pinkL_b2 = 0.57000*pinkL_b2 + whiteL*1.0526913;
+    pinkL_b3 = 0.0000001*pinkL_b3 + whiteL*0.0000002;
+    pinkL = pinkL_b0 + pinkL_b1 + pinkL_b2 + pinkL_b3;
+    pinkL *= 0.05;
+
+    // 4.5 dB/oct L
+    noise45_L = (pinkL*0.5) + (brownL*0.5);
+    noise45_L *= noise_amp;
+
+
+    //--------------------------------------------------
+    // RIGHT CHANNEL
+    //--------------------------------------------------
+
+    // White R
+    whiteR = rand(2)-1;
+
+    // Brown R
+    brownR = brown_prev_R + whiteR*0.02;
+    (brownR > 1) ? brownR = 1;
+    (brownR < -1) ? brownR = -1;
+    brown_prev_R = brownR;
+
+    // Pink R
+    pinkR_b0 = 0.99765*pinkR_b0 + whiteR*0.0990460;
+    pinkR_b1 = 0.96300*pinkR_b1 + whiteR*0.2965164;
+    pinkR_b2 = 0.57000*pinkR_b2 + whiteR*1.0526913;
+    pinkR_b3 = 0.0000001*pinkR_b3 + whiteR*0.0000002;
+    pinkR = pinkR_b0 + pinkR_b1 + pinkR_b2 + pinkR_b3;
+    pinkR *= 0.05;
+
+    // 4.5 dB/oct R
+    noise45_R = (pinkR*0.5) + (brownR*0.5);
+    noise45_R *= noise_amp;
+
+    //--------------------------------------------------
+    // OUTPUT
+    //--------------------------------------------------
+    spl0 += noise45_L;
+    spl1 += noise45_R;
+);
+
+//--------------------------------------------------
+// TONE GENERATOR (slider35 on/off)
+//--------------------------------------------------
+slider35 == 1 ?
+(
+    // Incremento fase
+    tone_phase += two_pi * slider36 / srate;
+    tone_phase >= two_pi ? tone_phase -= two_pi;
+
+    // Volume del tone (slider37 in dB → lineare)
+    tone_vol = 10^(slider37 / 20);
+
+    // Seno
+    tone = sin(tone_phase) * tone_vol;
+
+    spl0 += tone;
+    spl1 += tone;
+);

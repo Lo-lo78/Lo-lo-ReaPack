@@ -1,0 +1,5 @@
+# User-generated LSpectrum analysis: never package it.
+**/spectrum_LastResult.txt
+
+# Local test and scratch files.
+*.log

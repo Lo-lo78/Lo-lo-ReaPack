@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="it_IT">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+<meta name="generator" content="MarkdownForever">
+<title>LSpectrum 4.5dB Analyzer — Full Quick Guide</title>
+</head>
+<body>
+<header id="header-block">
+<h1 class="title">LSpectrum 4.5dB Analyzer — Full Quick Guide</h1>
+<p class="subtitle"><strong>Snapshot 0.24 — Updated after the new accessible selection workflow</strong></p>
+</header>
+
+<main id="main-content">
+
+<h2 id="what-lspectrum-is">What LSpectrum is</h2>
+<p>
+LSpectrum 4.5dB Analyzer is an accessible spectrum analysis system for REAPER made of two parts:
+</p>
+<ul>
+<li><strong>a JSFX analyzer</strong>, which measures the spectrum in real time</li>
+<li><strong>a Lua interface</strong>, which turns the result into a spoken, navigable table for screen-reader users</li>
+</ul>
+<p>
+The system is designed to analyze the <strong>relationship between frequency bands</strong>, not the absolute playback loudness.<br>
+What matters is the tonal shape of the spectrum: lows, mids, highs, and their balance against a chosen target curve.
+</p>
+<p>
+The analyzer works very well for blind and visually impaired users because the result is not just “shown”: it is made explorable, repeatable, copyable, and comparable by keyboard and speech.
+</p>
+
+<hr>
+
+<h2 id="general-concept">General concept</h2>
+<p>
+The analyzer divides the signal into <strong>32 logarithmic bands</strong> from about <strong>22 Hz to 18 kHz</strong>.<br>
+For each band, it calculates the difference in dB between the measured audio and a chosen <strong>target curve</strong>.
+</p>
+<p>
+So the reported value is not simply “how loud that band is”, but:
+</p>
+<ul>
+<li><strong>negative</strong> = that band is below the target curve</li>
+<li><strong>positive</strong> = that band is above the target curve</li>
+<li><strong>0 dB</strong> = that band is aligned with the target curve</li>
+</ul>
+<p>
+This makes LSpectrum especially useful for:
+</p>
+<ul>
+<li>tonal balance checking</li>
+<li>comparing material against a musical slope</li>
+<li>low-end and high-end inspection</li>
+<li>focused analysis of only selected bands</li>
+<li>accessible reading of spectral shape without relying on graphics</li>
+</ul>
+
+<hr>
+
+<h2 id="jsfx-overview">JSFX overview</h2>
+<p><strong>Plugin name:</strong> <code>JS: LSpectrum 4.5dB Analyzer</code></p>
+
+<h3 id="main-functions">Main functions</h3>
+<p>The JSFX:</p>
+<ul>
+<li>performs the actual FFT analysis</li>
+<li>uses a <strong>32768-point FFT</strong></li>
+<li>divides the spectrum into <strong>32 logarithmic bands</strong></li>
+<li>writes one dB difference value to each of <strong>32 sliders</strong></li>
+<li>can generate a <strong>reference stereo noise</strong></li>
+<li>can generate a <strong>tone</strong> for audible band checking</li>
+<li>passes audio through without coloration unless the noise or tone are enabled</li>
+</ul>
+
+<h3 id="frequency-bands">Frequency bands</h3>
+<p>The 32 bands are centered approximately at:</p>
+<p>
+22.3, 27.6, 34.3, 42.6, 52.8, 65.6, 81.4, 101,<br>
+125, 155, 193, 239, 297, 369, 458, 568,<br>
+705, 874, 1085, 1346, 1671, 2073, 2573, 3193,<br>
+3962, 4916, 6101, 7571, 9395, 11659, 14468, 17954 Hz
+</p>
+
+<h3 id="target-curves">Target curves</h3>
+<p>The JSFX supports these target curves:</p>
+<ul>
+<li>Flat 0 dB</li>
+<li>Pop Soft 2 dB</li>
+<li>Old Pop / Rock 3 dB</li>
+<li>Modern Pop 4 dB</li>
+<li>EDM / Synth Pop 4.5 dB</li>
+<li>Trap / Urban 5 dB</li>
+<li>Lo-Fi Warm 6 dB</li>
+</ul>
+<p>
+These are not EQ presets. They are <strong>reference spectral slopes</strong> used to compare the measured signal against a musical tonal profile.
+</p>
+
+<h3 id="noise-reference">Noise reference</h3>
+<p>
+The JSFX includes a stereo reference noise output controlled by <strong>slider33</strong>.
+</p>
+<p>It blends:</p>
+<ul>
+<li>pink-like noise</li>
+<li>brown-like noise</li>
+</ul>
+<p>
+This can help as a listening reference while analyzing tonal balance.
+</p>
+
+<h3 id="tone-generator">Tone generator</h3>
+<p>The JSFX also includes a sine tone generator:</p>
+<ul>
+<li>On/Off</li>
+<li>frequency in Hz</li>
+<li>level in dB</li>
+</ul>
+<p>
+The Lua script uses this as an audible aid to inspect the current band.
+</p>
+
+<h3 id="silence-handling">Silence handling</h3>
+<p>
+If the input is effectively silent, the JSFX sets the band sliders to a very low value so the Lua script can detect that no meaningful signal was present.
+</p>
+
+<hr>
+
+<h2 id="lua-script-overview">Lua script overview</h2>
+<p><strong>Script name:</strong> <code>LSpectrum Analyzer – 10s Analysis + Accessible 3-Column Table</code></p>
+<p>The Lua script is the accessible front end. It:</p>
+<ul>
+<li>loads the JSFX automatically</li>
+<li>ensures analysis can be run on master or selected track</li>
+<li>asks for analysis duration</li>
+<li>speaks the countdown</li>
+<li>builds the result table</li>
+<li>lets you move through rows and columns</li>
+<li>lets you copy lines or full results</li>
+<li>lets you select only specific bands for the next scan</li>
+<li>stores the last genre and duration</li>
+<li>opens the TXT report when needed</li>
+</ul>
+<p>The result TXT file is stored here:</p>
+<p><code>/REAPER/Scripts/Lo-lo - Scripts/analysis/LSpectrum 4.5dB Analyzer/spectrum_LastResult.txt</code></p>
+<p>
+If you have old snapshots, remove any outdated result file from previous locations to avoid confusion.
+</p>
+
+<hr>
+
+<h2 id="important-behavior">Important behavior</h2>
+
+<h3 id="the-analysis-is-relative-not-absolute">The analysis is relative, not absolute</h3>
+<p>
+LSpectrum is built around <strong>spectral balance</strong>.<br>
+If the whole signal becomes louder or quieter uniformly, the important result does not really change: the <strong>shape</strong> remains the same.
+</p>
+<p>
+That means the analyzer is best understood as a <strong>tonal balance tool</strong>, not as a loudness meter.
+</p>
+
+<h3 id="the-jsfx-is-controlled-from-lua">The JSFX is controlled from Lua</h3>
+<p>
+You normally do not need to open the JSFX directly.<br>
+The Lua interface manages:
+</p>
+<ul>
+<li>analysis start</li>
+<li>track target</li>
+<li>result table</li>
+<li>curve selection</li>
+<li>tone preview</li>
+<li>noise reference</li>
+<li>selection of active bands</li>
+<li>copying and exporting</li>
+</ul>
+
+<h3 id="the-analyzer-should-stay-at-the-end-of-the-fx-chain">The analyzer should stay at the end of the FX chain</h3>
+<p>
+The analyzer is intended to read the final signal <strong>after all processing</strong>, so it should be loaded at the <strong>end of the FX chain</strong>, not at the top.
+</p>
+
+<hr>
+
+<h2 id="main-menu">Main menu</h2>
+<p>When the script starts, it offers:</p>
+<ol>
+<li><strong>New Analysis</strong></li>
+<li><strong>Last Analysis</strong></li>
+<li><strong>Kick Analysis (Bands 1–14)</strong></li>
+<li><strong>New Analysis on Selected Track</strong></li>
+</ol>
+
+<h3 id="menu-entries-explained">Menu entries explained</h3>
+<p><strong>New Analysis</strong><br>
+Starts a normal full-spectrum analysis.</p>
+
+<p><strong>Last Analysis</strong><br>
+Loads the last saved result and opens the accessible result table.</p>
+
+<p><strong>Kick Analysis (Bands 1–14)</strong><br>
+Starts an analysis limited to the lower portion of the spectrum. Useful for kick, bass, sub, and low-mid inspection.</p>
+
+<p><strong>New Analysis on Selected Track</strong><br>
+Runs the analysis on the currently selected track instead of master.</p>
+
+<hr>
+
+<h2 id="countdown-phase">Countdown phase</h2>
+<p>Before analysis starts, the script asks for the duration in seconds.</p>
+<ul>
+<li>Minimum supported duration: <strong>10 seconds</strong></li>
+<li>The chosen duration is remembered in ExtState</li>
+<li>During countdown, spoken numbers announce the remaining time</li>
+<li>You can interrupt the countdown with <strong>Escape</strong></li>
+</ul>
+
+<h3 id="countdown-controls">Countdown controls</h3>
+<ul>
+<li><strong>Space</strong>: Play/Stop REAPER</li>
+<li><strong>Esc</strong>: cancel the countdown and close</li>
+</ul>
+
+<hr>
+
+<h2 id="result-table-structure">Result table structure</h2>
+<p>The result table has <strong>3 columns</strong>:</p>
+<ol>
+<li><strong>Band number</strong></li>
+<li><strong>Frequency</strong></li>
+<li><strong>Difference in dB</strong></li>
+</ol>
+<p>Example line:</p>
+<p><code>Band 19 | 1085 Hz | +0.00 dB</code></p>
+<p>
+This means that the measured level of band 19 matches the selected target curve at that frequency.
+</p>
+
+<hr>
+
+<h2 id="result-table-navigation">Result table navigation</h2>
+
+<h3 id="row-and-column-movement">Row and column movement</h3>
+<ul>
+<li><strong>Up Arrow</strong>: previous row</li>
+<li><strong>Down Arrow</strong>: next row</li>
+<li><strong>Left Arrow</strong>: previous column</li>
+<li><strong>Right Arrow</strong>: next column</li>
+<li><strong>Home</strong>: first row</li>
+<li><strong>End</strong>: last row</li>
+<li><strong>Page Up</strong>: move up 8 rows</li>
+<li><strong>Page Down</strong>: move down 8 rows</li>
+</ul>
+
+<h3 id="reading-commands">Reading commands</h3>
+<ul>
+<li><strong>Tab</strong>: speak current cell</li>
+<li><strong>Double Tab</strong>: speak full current line</li>
+<li><strong>Triple Tab</strong>: copy full current line to clipboard</li>
+</ul>
+
+<h3 id="direct-read-copy-commands">Direct read / copy commands</h3>
+<ul>
+<li><strong>1</strong>: speak current band number<br>
+<ul>
+<li>press twice quickly: copy band number</li>
+</ul>
+</li>
+<li><strong>2</strong>: speak current frequency<br>
+<ul>
+<li>press twice quickly: copy frequency</li>
+</ul>
+</li>
+<li><strong>3</strong>: speak current dB value<br>
+<ul>
+<li>press twice quickly: copy the dB value</li>
+</ul>
+</li>
+</ul>
+
+<h3 id="full-copy">Full copy</h3>
+<ul>
+<li><strong>Ctrl+C</strong>: copy the whole current report to clipboard</li>
+</ul>
+<p>
+The copied report includes the result title and header, not only the table.
+</p>
+
+<hr>
+
+<h2 id="result-title-and-report-content">Result title and report content</h2>
+<p>The result title includes:</p>
+<ul>
+<li>analysis target</li>
+<li>selected track or master</li>
+<li>current genre / target curve</li>
+</ul>
+<p>Example:</p>
+<p><code>Analysis Result – Master – Default: EDM Synth Pop 4.5 dB</code></p>
+<p>The full copied report includes:</p>
+<ul>
+<li>result title</li>
+<li>analysis header</li>
+<li>table contents</li>
+</ul>
+<p>
+This makes it easy to paste results into notes, emails, documents, or chats without opening the TXT file.
+</p>
+
+<hr>
+
+<h2 id="analysis-control-keys">Analysis control keys</h2>
+<ul>
+<li><strong>F1</strong>: open the quick guide</li>
+<li><strong>R</strong>: start a new analysis using the stored duration</li>
+<li><strong>T</strong>: switch analysis target to selected track</li>
+<li><strong>M</strong>: switch analysis target to master</li>
+<li><strong>Space</strong>: Play/Stop REAPER</li>
+<li><strong>Esc</strong>: close everything</li>
+<li><strong>O</strong>: open the TXT report and exit</li>
+</ul>
+<p>
+<strong>O</strong> opens the TXT report file and exits the script.
+</p>
+
+<hr>
+
+<h2 id="target-curve-control">Target curve control</h2>
+<p>These keys choose the target curve:</p>
+<ul>
+<li><strong>A</strong>: Flat 0 dB</li>
+<li><strong>S</strong>: Pop Soft 2 dB</li>
+<li><strong>D</strong>: Old Pop Rock 3 dB</li>
+<li><strong>F</strong>: Modern Pop 4 dB</li>
+<li><strong>G</strong>: Default: EDM Synth Pop 4.5 dB</li>
+<li><strong>H</strong>: Trap / Urban 5 dB</li>
+<li><strong>J</strong>: Lo-Fi Warm 6 dB</li>
+</ul>
+<p>
+When you change the curve, the next scan will compare the measured spectrum against that new target slope.
+</p>
+
+<hr>
+
+<h2 id="announcing-the-next-scan-settings">Announcing the next scan settings</h2>
+<ul>
+<li><strong>\</strong>: announces how the next scan will be configured</li>
+</ul>
+<p>This spoken message includes:</p>
+<ul>
+<li>current target: track or master</li>
+<li>current genre / curve</li>
+<li>number of active bands for the next scan</li>
+</ul>
+<p>
+This is useful before pressing <strong>R</strong>, because it tells you what the next analysis will use without having to remember the current setup.
+</p>
+<p>Example idea of the message:</p>
+<p><code>Next scan. Master. Default EDM Synth Pop 4.5 dB. 32 bands active.</code></p>
+
+<hr>
+
+<h2 id="tone-preview">Tone preview</h2>
+<ul>
+<li><strong>Enter</strong>: toggle the sine tone preview on/off</li>
+</ul>
+<p>When enabled, the tone uses:</p>
+<ul>
+<li>the frequency of the current band</li>
+<li>a level derived from the current dB reading</li>
+</ul>
+<p>
+This can help you “hear” where you are in the table and relate a band to an audible reference.
+</p>
+
+<hr>
+
+<h2 id="noise-reference-control">Noise reference control</h2>
+<ul>
+<li><strong>+</strong>: increase reference noise level</li>
+<li><strong>-</strong>: decrease reference noise level</li>
+</ul>
+<p>
+This changes the JSFX noise reference level in dB.
+</p>
+<p>
+Useful when you want a spectral listening anchor while working.
+</p>
+
+<hr>
+
+<h2 id="band-selection-mode">Band selection mode</h2>
+<p>
+One of the major new features is the ability to choose which bands will be included in the next scan.
+</p>
+
+<h3 id="entering-and-leaving-selection-mode">Entering and leaving selection mode</h3>
+<ul>
+<li><strong>B</strong>: toggle Band Selection Mode on/off</li>
+</ul>
+
+<p>When selection mode is active:</p>
+<ul>
+<li>navigation moves through the <strong>full available band range</strong></li>
+<li><strong>Space</strong> no longer controls Play/Stop</li>
+<li><strong>Space</strong> selects or unselects the current band</li>
+<li>the spoken cell tells you whether the band is <strong>selected</strong> or <strong>unselected</strong></li>
+</ul>
+
+<p>When selection mode is off:</p>
+<ul>
+<li>the result table shows only the currently active bands</li>
+<li><strong>Space</strong> returns to normal Play/Stop behavior</li>
+</ul>
+
+<h3 id="band-selection-mode-behavior">Band selection mode behavior</h3>
+<p>Inside selection mode:</p>
+<ul>
+<li><strong>Up/Down/Home/End/Page Up/Page Down</strong> navigate bands</li>
+<li><strong>Space</strong> toggles selection of the current band</li>
+<li><strong>1</strong> speaks the band number</li>
+<li><strong>2</strong> speaks the frequency</li>
+<li><strong>3</strong> speaks selected/unselected state</li>
+<li><strong>Tab</strong> still reads the current cell or line</li>
+<li><strong>R</strong> is still active for immediate restart</li>
+<li>other normal keys remain usable</li>
+</ul>
+
+<h3 id="selection-logic">Selection logic</h3>
+<p>
+If no bands are explicitly selected, the next scan uses <strong>all available bands</strong>.
+</p>
+<p>So:</p>
+<ul>
+<li>in normal full analysis, no selection means <strong>32 bands active</strong></li>
+<li>in kick mode, no selection means <strong>14 bands active</strong></li>
+</ul>
+
+<hr>
+
+<h2 id="restore-all-bands">Restore all bands</h2>
+<ul>
+<li><strong>Delete</strong>: restore all bands at once</li>
+</ul>
+<p>This works both:</p>
+<ul>
+<li><strong>inside Band Selection Mode</strong></li>
+<li><strong>outside Band Selection Mode</strong></li>
+</ul>
+<p>
+That means you can instantly return to the full active set without first pressing <strong>B</strong>.
+</p>
+<p>
+The spoken message confirms that all bands are restored and reports how many are active.
+</p>
+<p>Examples:</p>
+<ul>
+<li><code>All bands restored. 32 bands active.</code></li>
+<li><code>All bands restored. 14 bands active.</code></li>
+</ul>
+<p>
+This is especially useful before pressing <strong>R</strong>, because it instantly resets the next scan to the full available set.
+</p>
+
+<hr>
+
+<h2 id="kick-analysis-behavior">Kick analysis behavior</h2>
+<p>Kick Analysis uses only the lower range:</p>
+<ul>
+<li><strong>Bands 1–14</strong></li>
+</ul>
+<p>This is useful for:</p>
+<ul>
+<li>kick fundamental</li>
+<li>sub and low bass</li>
+<li>body / punch region</li>
+<li>low-mid balance</li>
+</ul>
+<p>
+All the selection features still work there, but the selectable range is limited to 14 bands.
+</p>
+<p>So in kick mode:</p>
+<ul>
+<li>selection mode only navigates bands 1–14</li>
+<li>Delete restores all 14 active kick bands</li>
+<li>the next scan announcement reports 14 active bands if nothing is selected manually</li>
+</ul>
+
+<hr>
+
+<h2 id="loading-the-last-analysis">Loading the last analysis</h2>
+<p>
+When you choose <strong>Last Analysis</strong>, the script loads the previously saved TXT result and rebuilds the table.
+</p>
+<p>The loaded result keeps:</p>
+<ul>
+<li>band table</li>
+<li>band order</li>
+<li>current stored genre label</li>
+<li>accessible navigation</li>
+<li>full copy support</li>
+</ul>
+<p>
+This is useful when you want to reopen a result without rerunning the scan.
+</p>
+
+<hr>
+
+<h2 id="typical-workflow">Typical workflow</h2>
+
+<h3 id="standard-full-spectrum-workflow">Standard full-spectrum workflow</h3>
+<ol>
+<li>Launch the script.</li>
+<li>Choose <strong>New Analysis</strong> or <strong>New Analysis on Selected Track</strong>.</li>
+<li>Enter the analysis duration.</li>
+<li>Let the countdown run while audio plays.</li>
+<li>After the scan, navigate the table with arrows.</li>
+<li>Use <strong>Tab</strong>, <strong>1</strong>, <strong>2</strong>, <strong>3</strong> to inspect the result.</li>
+<li>Use <strong>A/S/D/F/G/H/J</strong> to choose a different target curve.</li>
+<li>Press <strong>\</strong> to hear how the next scan is currently configured.</li>
+<li>Press <strong>R</strong> to rerun the analysis with the stored duration.</li>
+<li>Press <strong>Ctrl+C</strong> if you want the whole result on the clipboard.</li>
+</ol>
+
+<h3 id="focused-workflow-with-selected-bands">Focused workflow with selected bands</h3>
+<ol>
+<li>Run an analysis.</li>
+<li>Press <strong>B</strong> to enter Band Selection Mode.</li>
+<li>Move with arrows to the bands you care about.</li>
+<li>Press <strong>Space</strong> to select or unselect them.</li>
+<li>Press <strong>Delete</strong> at any time if you want to restore all bands.</li>
+<li>Press <strong>B</strong> again to leave selection mode.</li>
+<li>Press <strong>\</strong> to confirm how many bands the next scan will use.</li>
+<li>Press <strong>R</strong> to run a new analysis on only those bands.</li>
+</ol>
+
+<h3 id="quick-restore-workflow">Quick restore workflow</h3>
+<p>
+If the visible table currently shows fewer bands and you want all of them back immediately:
+</p>
+<ol>
+<li>Press <strong>Delete</strong></li>
+<li>All bands are restored</li>
+<li>Press <strong>R</strong> to run the next scan with the full band set</li>
+</ol>
+<p>
+No need to enter Band Selection Mode first.
+</p>
+
+<hr>
+
+<h2 id="why-this-analyzer-is-useful">Why this analyzer is useful</h2>
+<p>
+LSpectrum is especially useful because it does not try to replace hearing.<br>
+It supports hearing with structured, repeatable information.
+</p>
+<p>It is good for:</p>
+<ul>
+<li>tonal balance inspection</li>
+<li>comparing mixes against a chosen slope</li>
+<li>checking low-end distribution</li>
+<li>learning spectral relationships</li>
+<li>making spectrum analysis usable without sight</li>
+</ul>
+<p>
+For blind users, this is particularly valuable because many analyzers on the market are visually rich but conceptually poor in accessibility. LSpectrum instead turns the spectrum into a spoken table that can actually be navigated and understood.
+</p>
+
+<hr>
+
+<h2 id="practical-interpretation-tips">Practical interpretation tips</h2>
+<ul>
+<li>A result around <strong>0 dB</strong> means the band matches the target curve</li>
+<li>Large <strong>negative</strong> values mean that band is weaker than the target</li>
+<li>Large <strong>positive</strong> values mean that band is stronger than the target</li>
+<li>What matters most is the <strong>shape across bands</strong>, not the absolute loudness of the file</li>
+<li>A louder or quieter file with the same tonal shape will produce essentially the same useful reading</li>
+</ul>
+<p>
+So LSpectrum is best treated as a <strong>spectral relation analyzer</strong>, not a simple level meter.
+</p>
+
+<hr>
+
+<h2 id="useful-links-and-contacts">Useful links and contacts</h2>
+
+<h3 id="osara">OSARA</h3>
+<p>
+Download OSARA:<br>
+https://osara.reaperaccessibility.com/snapshots/
+</p>
+
+<h3 id="osara-issues">OSARA issues</h3>
+<p>
+Open a new issue on GitHub and describe the problem with steps to reproduce:<br>
+https://github.com/jcsteh/osara/issues/new
+</p>
+
+<h3 id="reapers-without-peepers">Reapers Without Peepers</h3>
+<p>
+RWP group:<br>
+https://groups.io/g/rwp
+</p>
+
+<h3 id="sws-extension">SWS extension</h3>
+<p>
+A useful extension set for REAPER:<br>
+http://sws-extension.org/
+</p>
+
+<h3 id="reaper-accessibility-resources">REAPER accessibility resources</h3>
+<p>
+Documentation and resources for screen-reader users:<br>
+www.reaperaccessibility.com
+</p>
+
+<h3 id="contact-for-improvements">Contact for improvements</h3>
+<p>
+To improve the Lua script and JSFX write to:<br>
+vmanolo301@gmail.com
+</p>
+
+</main>
+</body>
+</html>
