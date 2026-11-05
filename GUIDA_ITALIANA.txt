@@ -1,0 +1,76 @@
+Lo-lo-ReaPack - CONFIGURAZIONE INIZIALE
+========================================
+
+REPOSITORY:
+https://github.com/Lo-lo78/Lo-lo-ReaPack
+
+IMPORTANTE: Questa configurazione non pubblica ancora nessuno strumento.
+Il file index.xml iniziale e' un catalogo valido ma vuoto.
+
+PRIMA CONFIGURAZIONE (Git Bash sul tuo computer)
+1) Clona il repository nuovo, se non lo hai gia' in locale:
+   git clone https://github.com/Lo-lo78/Lo-lo-ReaPack.git
+2) Entra nella cartella Lo-lo-ReaPack.
+3) Estrai il contenuto di questo ZIP nella cartella appena clonata.
+   Mantieni le sottocartelle, soprattutto .github/workflows.
+   Non caricare direttamente lo ZIP su GitHub: va estratto.
+4) Apri Git Bash nella cartella Lo-lo-ReaPack ed esegui:
+   git add . && git commit -m "Initialize ReaPack index automation" && git push
+5) Su GitHub vai a Actions > Update ReaPack Index.
+   Lo stato corretto e' il testo "Success" (non serve vedere il colore).
+
+INDIRIZZO XML (dopo il primo push):
+https://raw.githubusercontent.com/Lo-lo78/Lo-lo-ReaPack/main/index.xml
+
+COSA FA IL WORKFLOW
+- Controlla i metadati dei pacchetti con reapack-index --check.
+- Genera e aggiorna l'XML quando fai push su main.
+- Conserva la cronologia delle versioni nel file index.xml.
+- Non pubblica automaticamente file TEST: per mantenere questa regola,
+  inserire in questo repository SOLO versioni stabili/approvate.
+- Non richiede tag GitHub Releases: per script/JSFX basta il push
+  del file approvato con @version nel suo header.
+
+STRUTTURA PREDISPOSTA
+- Lo-lo - Scripts/  => REAPER/Scripts/Lo-lo - Scripts/
+- Lo-lo - JSFX/     => REAPER/Effects/Lo-lo - JSFX/
+
+METADATI DI UN SINGOLO LUA (solo esempio, NON incluso):
+-- @description Nome dello script
+-- @version 1.0
+-- @author Lo-lo
+-- @changelog
+--   Prima versione ufficiale
+
+METADATI DI UN SINGOLO JSFX (solo esempio, NON incluso):
+// @description Nome dell'effetto
+// @version 1.0
+// @author Lo-lo
+// @changelog
+//   Prima versione ufficiale
+
+desc:Nome dell'effetto
+
+Nota: nel JSFX, conservare le righe tecniche originali e verificare
+che REAPER riconosca correttamente il nome dell'effetto.
+
+PACCHETTI MISTI LUA + JSFX
+Per gli strumenti ibridi prepareremo una distribuzione unica e un
+header @provides con i percorsi destinazione. Verificheremo inoltre le
+dipendenze, i preset e le guide. Non copiare un Lua e un JSFX alla cieca:
+possono essere necessari altri file e percorsi esatti.
+
+VERSIONI
+Ogni pacchetto mantiene la propria versione (e.g. LSpectrum 6.6,
+Stretch Marker Editor 4.2). Non e' necessario aumentare una versione
+globale del repository. Per ogni nuovo aggiornamento occorre aumentare
+il campo @version del pacchetto; modificare un file senza cambiare
+@version non garantisce l'aggiornamento del pacchetto installato.
+
+NOTA SU LICENZE
+Il repository al momento non ha una licenza generale. Decideremo una
+licenza per gli strumenti che verranno pubblicati, verificando anche
+le eventuali dipendenze di terzi.
+
+DOCUMENTAZIONE:
+https://github.com/cfillion/reapack-index/wiki/Packaging-Documentation

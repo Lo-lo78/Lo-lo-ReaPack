@@ -1,0 +1,55 @@
+name: Update ReaPack Index
+
+# This repository is for approved stable versions only.
+# Every push to main checks and rebuilds the ReaPack package catalog.
+# GitHub Actions' own GITHUB_TOKEN commits do not retrigger workflows.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reapack-index-main
+  cancel-in-progress: false
+
+jobs:
+  index:
+    name: Check packages and update index.xml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full Git history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Install reapack-index
+        run: gem install reapack-index --no-document
+
+      - name: Validate packages
+        run: reapack-index --check
+
+      - name: Regenerate ReaPack index
+        run: reapack-index --no-commit
+
+      - name: Commit updated index
+        shell: bash
+        run: |
+          if ! git diff --quiet -- index.xml; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add index.xml
+            git commit -m 'Update ReaPack index [skip ci]'
+            git push origin HEAD:main
+          else
+            echo 'ReaPack index is already up to date.'
+          fi
