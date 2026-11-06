@@ -1,0 +1,3155 @@
+// @description Biscot1 Synth
+// @version 2.29
+// @author Lo-lo
+// @changelog
+//   First ReaPack publication of Biscot1 Synth v2.29.
+
+desc: Biscot1 Synth
+// v2.29 TEST Always Auto: Oversampling/AA is permanently Auto; slider1 is intentionally free for a future control.
+// v2.28 TEST Zero-DC Composite 5/6/7: extends analytic DC centering to AA Triangle+Pulse; keeps v2.27 Saw+Pulse and Triangle+Saw+Pulse fixes unchanged.
+// v2.27 TEST Zero-DC Composite 6/7: removes analytic DC bias from AA Saw+Pulse and Triangle+Saw+Pulse before level makeup/nonlinear output stages.
+// v2.26 TEST Runtime Fast Paths: exact/near-exact CPU fast paths for 50% Square mipmap, cached mip selection, normalized table reads and safe mono output processing.
+// v2.25 TEST Cold Reset Idle: sleep is keyed from real VCA silence + no held MIDI, then runtime state is atomically returned to cold-init state.
+// v2.24 TEST Zero-Work Idle: idle @sample has no branch and writes no outputs; DSP exists only when active.
+// v2.23 TEST: reports automatic tail detection to REAPER so a warm silent instance can
+// return to host auto-bypass/sleep after its real output tail has ended.
+// v2.22 TEST: Cold Idle Return. Once every audible Amp ADSR is fully finished,
+// silent Mod/Filter envelope tails are collapsed so the synth returns to true cold sleep.
+// v2.21 TEST: deep idle block sleep; MIDI remains live, inactive block-rate pitch/ARP/drift work sleeps.
+// Declares no audio input because the instrument never reads input samples, allowing REAPER host-side input optimizations.
+// v2.18 TEST MipMap-AA: true oscillator-source band limiting for Triangle/Saw/Pulse.
+// Auto uses octave/mip band-limited wavetables at 1x when Ring/Sync are off; rest of synth stays at project rate.
+// This is a diagnostic/quality experiment: if foldback remains on a plain primitive wave, it is being created downstream.
+// CPU Deep Optimization: conditional oscillator components, static-pitch/filter fast paths,
+// sleeping ARP preparation, 1x oscillator fast path, stereo-only routing cleanup and cached output stage.
+// Audio engine aligned with the Biscot1 Tracker Core; autonomous MIDI synth, no GMEM.
+// v2.20 TEST: Triangle+Saw AA blend retuned: zero-DC, stronger Saw identity, reduced startup click.
+// v2.19 TEST: extends mip-mapped source antialiasing to SID combined waves.
+// In Auto, combined waves reserve bandwidth before polynomial DAC interaction; Off keeps the original 8-bit SID path.
+// Historical v2.17: Oversampling Off/Auto was block-live and independent from MIDI Mode.
+// v2.29 removes that selector: Auto is now permanent and slider1 is intentionally unused.
+// AA mipmaps stay active at 1x for normal waves; Ring/Sync still select adaptive 2x/4x/8x/16x.
+// v2.16: first correction of the Oversampling selector source.
+// v2.15: adds independent Upper/Lower Squash controls for each LFO; six new sliders, 190 total.
+// v2.11: modular stereo filter. Centered operators use one mono filter; stereo opens only when filtered pan is used.
+// v2.10: true idle sleep even with active LFO destinations; only free-running LFO phases advance while silent.
+// v1.98: multichannel layout changed to 2 inputs / 10 outputs: Mix 1/2, Op1 3/4, Op2 5/6, Op3 7/8, Filter 9/10.
+// v1.97: declares explicit audio input/output pins for correct REAPER pin reporting.
+// v1.94: adds the historical SID Voice 3 Off switch: Op3 is muted only from the direct path, while oscillator, envelope, ring, sync and modulation remain active; if Op3 To Filter is On it remains audible through the filter.
+// v1.93: adds a fixed SID-style global output stage before Master Volume: subtle model-dependent asymmetric amplifier, external ~16 kHz low-pass and very-low DC blocker. No new sliders.
+// v2.00: restores fixed operator Pan after Level and adds per-operator Mod Env Pan Depth before Pitch Mod Depth.
+// v2.01: in Chord Allocate, fixed Pan and Mod Env Pan Depth are independent per operator; LFO Pan remains controlled by the Op1 Pan Depths as before.
+// v1.96: in Chord Allocate, each LFO Op1 Pan Depth controls all three allocated voices. Outside Chord Allocate, LFO pan depths remain independent.
+// v1.92: replaces global Drift with per-operator Note-On Drift controls after the trigger group. In Chord Allocate, Op1 Drift amount controls all three voices.
+// v1.91: fixes Note-On Drift using the LJuno rand(2)-1 method and LJuno-style +/-0.5 semitone maximum range.
+// v1.90: Drift is sampled independently per operator on Note On, LJuno-style.
+ // It no longer moves continuously over time, starts immediately detuned, and removes the per-sample drift random/smoothing path.
+ // v1.89: conservative CPU pass; caches drift smoothing and static mode/routing choices outside @sample without changing synthesis equations.
+// v1.88: doubles the effective 6581 resonance response as an experiment, while retaining the existing safety clamp below self-oscillation.
+// v1.86: doubles the effective 8580 resonance response while keeping 6581 unchanged and retaining a safety clamp below self-oscillation.
+// v1.85: adds Filter Input before the filter core for both 8580 and 6581; renames Filter Volume to Filter Output. Defaults preserve the v1.84 sound.
+
+// Biscot SID Composite Lab
+// v2.03: restores Op1 as the shared Trigger/Legato control in Chord Allocate; per-operator Pan and Mod Env Pan remain independent.
+// v1.77: in Chord Allocate, all three independent arpeggiators read the complete held chord instead of only the single note allocated to each mono voice.
+// v1.84: keeps the 6581 filtered output at -12 dB but restores a little more post-filter saturation without changing the level trim.
+// v1.83: lowers only the active 6581 filtered output by 12 dB after all filter colour/resonance processing, preserving its character.
+// v1.82: lowers the complete 6581 model by 3 dB after level comparison without the filter.
+// v1.81: removes the Poly Mode control and all Poly 2 fixed-register allocation code. Chord Allocate keeps its original default voice allocation. Drift remains after Filter Volume.
+// v1.79: adds global three-voice pitch Drift; 0 bypasses the drift path, default 0.18.
+// v1.78: in Chord Allocate, every incoming chord note feeds all three independent SID Seq memories; each sequence keeps its own clock/step position.
+// v1.76: in Chord Allocate, the three arpeggiators are independent (mode, rate, octave range, SID sequence and glide) while the rest of the synth panel continues to follow Op1.
+// v1.75: in Chord Allocate, Op1/Op2/Op3 Pitch sliders remain independent while the rest of the synth panel continues to follow Op1.
+// v1.74: fixes Op1 Level in Chord Allocate: it is now the real shared VCA level and is no longer cancelled by level-based normalization.
+// v1.73: Chord Allocate uses Op1 as the complete master synth panel for all three allocated mono voices; only note/gate/voice state remain independent.
+// v1.72: each operator Mod Env can modulate the rate of LFO1, LFO2 or LFO3 with a bipolar depth. Depth 0 bypasses the extra rate calculation.
+// v1.70: the former Pitch Env is now the per-operator Mod Env. It directly modulates pitch and PWM with independent bipolar depths; PWM source selectors removed.
+// v1.69: PWM envelope modulation per operator adds bipolar Depth and selectable source (Amp ADSR, Filter ADSR, Pitch ADSR).
+// v1.68: adds an independent pitch ADSR for each operator. Depth is bipolar +/-48 semitones with 0.01-semitone resolution; controls are physically inserted after Portamento.
+// v1.67: 6581 saturation is made more parallel and dynamic: less envelope flattening and less sustain-like swelling, while keeping the dirty colour.
+// v1.63: noise LFSR clock raised two octaves while preserving pitch tracking; multichannel routing from v1.62 retained.
+// v1.62: multichannel routing changed to Op1 1/2, Op2 3/4, Op3 5/6, filtered bus 7/8 with filtered operators removed from dry.
+// v1.61: adds Audio Mode Stereo/Multichannel; global slider order starts with Oversampling, Audio Mode, MIDI, restart/model/volume/noise. Filter Key Follow moved after HP.
+// v1.60: adds Filter Key Follow in the filter section and Noise Character as a global SID-style noise blend.
+// v1.59: slider order reorganized into four sections: global, three-operator groups, filter, and three LFO strips.
+// v1.58: renumbers and compacts sliders so operator/LFO parameters appear in grouped sequential order.
+// v1.56: removes the Composite Character slider; 6581 LP+BP+HP three-state lift is lowered by 1 dB.
+// v1.55: lowers the closed-cutoff floor a little, especially on 6581 LP, so cutoff 0 catches lower harmonics for basses.
+// v1.54: 6581 low-pass resonance presence boosted after the clean core, without reintroducing pre-filter saturation.
+// v1.53: 6581 pre-filter drive removed from the resonant path; resonance is cleaner/post-filter so saw stays saw-like.
+// v1.51: 6581 resonance hybridized: core feedback kept below oscillation, extra clean resonant presence added after the stable core.
+// v1.50: 6581 resonance reworked at the feedback/core level: cleaner resonant bite, no free self-oscillation gate.
+// v1.48: safer 6581 resonance top end and note/envelope-following filter silence gate so the dirty model does not keep singing after note-off.
+// v1.47: 6581 three-mode filter has more perceived level; 6581/8580 resonance scale is slightly stronger but still clamped against self-oscillation.
+// v1.46: expands LFO PWM Depth slider ranges to +/-1.5 so LFO PWM can cover a wider pulse-width sweep.
+// v1.45: removes LFO Ring/Sync depth sliders and related @sample gate logic. LFOs now modulate cutoff, pitch, PWM and level only; Ring/Sync remain manual SID switches.
+// v1.42: removes user-facing High Pitch Guard and its per-sample guard path; Oversampling is now only Off/Auto and Auto handles high-register cleanup.
+// v1.41: Sample Hold/Smooth Random rate fixed: no extra double phase; delay fade-in and One Shot Length retained from v1.40.
+// v1.57: renamed Hard Restart labels: SID Player -> Env Reset, Aggressive -> Full Reset. Logic unchanged.
+// v1.39: LFO Trigger/One Shot now follows the same Trigger/Legato decision as the Op1/Filter ADSR: Trigger restarts every note; Legato restarts only on the first non-legato note.
+// v1.38: CPU pass. LFO strips sleep completely when all their depths are zero; LFO increments/smoothing/delay coefficients are cached outside @sample. Oversampling slider reduced to Off/Auto.
+// v1.37: adds three independent BPM-synced LFO strips with direct depths for cutoff, Op pitch/PWM/level. Rate: 1=bar, 4=beat, 8=eighth, 16=sixteenth, up to 512; below 1 gives multi-bar cycles.
+// v1.36: replaces the global Legato Mode with per-operator Mode Trigger sliders. Removes the separate Pulse Width sliders from the UI; PWM Extended is now the only visible pulse-width control.
+// v1.35: Chord Allocate now uses Op1 as the shared timbre/VCA panel for all three mono voices, while notes/legato remain per voice. Adds per-voice MIDI pitch-bend range 0..96 semitones.
+// v1.33: stronger oscillator/ring anti-aliasing. Adds 8x/16x oversampling choices, lets Auto reach 8x on dangerous high notes/ring-sync, and restores a little high-register energy after BLEP so very high notes do not disappear.
+// v1.30: extended PWM remapped as an extreme SID-style duty range; Op Semitone is now continuous Master Tone +/-96 semitones with 0.01 step. Fine Cent remains separate.
+// v1.29: removed redundant Op3 Ghost Audio Mode. Op3 Level=0 now acts as the SID-style silent modulator path.
+//       Ring/sync modulators keep their oscillators running through another operator's release, so ring does not collapse to a clean oscillator tail.
+// v1.24: ARP glide depth now uses an LSH-2-style independent coefficient per operator; it no longer requires operator Portamento to be above zero.
+// v1.26: reinserted SID Seq Dynamic Length as ARP mode 1, with clock-only note entry and release-transparent playback.
+// v1.25: in ARP mode, note-ons update the arp pool only; oscillator pitch changes only on arp clock steps, never immediately.
+// v1.24: ARP glide depth is now independent from normal operator portamento.
+// v1.23: ARP is note-off transparent: while an arp mode is active, note-offs do not shrink or transpose the latched arp; it keeps cycling until idle.
+// v1.22: release ARP is now transparent: it freezes the arpeggio base note/root during release so note-off order cannot transpose the arp.
+// v1.21: fixed release ARP latch. Note-off no longer overwrites the release latch with the last single note; release keeps the full arpeggio set.
+// v1.20: added per-operator ARP glide depth. ARP frequency steps can now be rounded with portamento-style curves, LSH-2 style.
+// v1.19: replaced experimental SID Seq with the proven LSH-2 ARP2 frequency engine, cloned independently for Op1/Op2/Op3.
+// v1.18: arp keeps running during envelope release using a per-operator release latch, like LSH-2.
+// v1.13: added SID-player style frequency arpeggiator per operator. It changes oscillator pitch/frequency without MIDI note retrigger, separately for Op1/Op2/Op3.
+// v1.12: SID-correct oscillator topology for ring modulation and sync. Ring affects the triangle component only; sync resets on the modulator accumulator MSB rising edge.
+// v1.7: moved 6581 level compensation from global oscillator output to the filtered path only.
+// v1.6: fixed held-note stack so repeated same-note Note On events are not collapsed; prevents short skipped notes.
+// v1.5: stronger 6581 Dirtier make-up gain to better match perceived level with 8580 Clearer.
+// v1.4: virtual negative cutoff range, bipolar filter envelope behavior, stronger musical resonance and +3 dB composite-character make-up gain.
+// v1.3: added dedicated filter ADSR, mono legato/retrigger behavior, held-note return and per-operator portamento.
+// v1.2: added output gain compensation for 6581 Dirtier model.
+// v1.1: softer musical 6581 baseline and safer non self-oscillating resonance.
+// v1.0: LP/BP/HP all Off now bypasses the filter instead of muting routed operators.
+// v0.9: fixed ADSR with explicit Attack, Decay, Sustain and Release states.
+// v0.8: sliders reordered as a matrix for easier testing without Lua.
+// v0.7: filter study update: 6581 R4 low-pass never fully disappears; 8580 R5 low-pass can close hard and has cleaner resonance.
+// Ring and sync now follow the SID ring/sync chain: Op3 -> Op1, Op1 -> Op2, Op2 -> Op3.
+// v0.6: SID-style filter routing: Op1/Op2/Op3 can enter filter separately; LP/BP/HP are independent summed switches.
+// v0.5: cleaner 8580 baseline, homogeneous operators for chord tests.
+// v0.4: starts with only Op1 audible.
+// Op2 and Op3 are silent until their levels are raised, but can still act as sync/ring references.
+// v0.3: corrected architecture.
+// This is NOT an 8-voice synth.
+// It is one SID-like block: 3 monophonic operators/voices.
+// Modes:
+// 0 = all 3 operators follow the same MIDI note
+// 1 = first 3 held notes are assigned to operators 1, 2, 3
+// 2 = MIDI channels 1, 2, 3 directly control operators 1, 2, 3
+
+// --------------------------------------------------------------------------------
+
+// v1.72: Mod Env LFO Rate Target/Depth controls are physically inserted after Pitch/PWM modulation depths.
+// v1.68: three independent pitch envelopes, one per operator, inserted after Portamento and before Arp controls.
+// v1.67: reduces 6581 sustain-like compression by blending post-filter and final clipping with the clean signal.
+// v1.65: moves Op1/Op2/Op3 PWM sliders before the operator Attack sliders and renumbers references accordingly.
+in_pin:none
+
+out_pin:Mix Left
+out_pin:Mix Right
+out_pin:Op1 Left
+out_pin:Op1 Right
+out_pin:Op2 Left
+out_pin:Op2 Right
+out_pin:Op3 Left
+out_pin:Op3 Right
+out_pin:Filter Left
+out_pin:Filter Right
+
+slider2:0<0,1,1{Stereo,Multichannel}>Audio Mode
+slider3:0<0,2,1{All Operators Same Note,Chord Allocate 3 Mono Ops,MIDI Channels 1-3}>MIDI Mode
+slider4:1<0,3,1{Off,Fast,Env Reset,Full Reset}>Hard Restart
+slider5:0<0,1,1{8580 Clearer,6581 Dirtier}>Model
+slider6:0<-24,24,0.1>Filter Input
+slider7:0<-24,24,0.01>Filter Output
+slider8:-6<-60,6,0.01>Master Volume
+slider9:0<0,1,0.001>Noise Character
+slider10:0<0,1,1{Trigger,Legato}>Op1 Mode Trigger
+slider11:0<0,1,1{Trigger,Legato}>Op2 Mode Trigger
+slider12:0<0,1,1{Trigger,Legato}>Op3 Mode Trigger
+slider13:0.18<0,1,0.01>Op1 Drift
+slider14:0.18<0,1,0.01>Op2 Drift
+slider15:0.18<0,1,0.01>Op3 Drift
+slider16:1.00<0,1,0.001>Op1 Level
+slider17:0.00<0,1,0.001>Op2 Level
+slider18:0.00<0,1,0.001>Op3 Level
+slider19:0<-1,1,0.01>Op1 Pan
+slider20:0<-1,1,0.01>Op2 Pan
+slider21:0<-1,1,0.01>Op3 Pan
+slider22:2<0,7,1{Triangle,Saw,Pulse,Noise,Triangle+Saw,Triangle+Pulse,Saw+Pulse,Triangle+Saw+Pulse}>Op1 Wave
+slider23:2<0,7,1{Triangle,Saw,Pulse,Noise,Triangle+Saw,Triangle+Pulse,Saw+Pulse,Triangle+Saw+Pulse}>Op2 Wave
+slider24:2<0,7,1{Triangle,Saw,Pulse,Noise,Triangle+Saw,Triangle+Pulse,Saw+Pulse,Triangle+Saw+Pulse}>Op3 Wave
+slider25:0<-96,96,0.01>Op1 Pitch
+slider26:0<-96,96,0.01>Op2 Pitch
+slider27:0<-96,96,0.01>Op3 Pitch
+slider28:0<-100,100,0.1>Op1 Fine Pitch
+slider29:0<-100,100,0.1>Op2 Fine Pitch
+slider30:0<-100,100,0.1>Op3 Fine Pitch
+slider31:0<-64,64,0.1>Op1 PWM
+slider32:0<-64,64,0.1>Op2 PWM
+slider33:0<-64,64,0.1>Op3 PWM
+slider34:0<0,2,0.001>Op1 Attack
+slider35:0<0,2,0.001>Op2 Attack
+slider36:0<0,2,0.001>Op3 Attack
+slider37:0.120<0,2,0.001>Op1 Decay
+slider38:0.120<0,2,0.001>Op2 Decay
+slider39:0.120<0,2,0.001>Op3 Decay
+slider40:0.70<0,1,0.001>Op1 Sustain
+slider41:0.70<0,1,0.001>Op2 Sustain
+slider42:0.70<0,1,0.001>Op3 Sustain
+slider43:0<0,3,0.001>Op1 Release
+slider44:0<0,3,0.001>Op2 Release
+slider45:0<0,3,0.001>Op3 Release
+slider46:0.000<0,2,0.001>Op1 Portamento
+slider47:0.000<0,2,0.001>Op2 Portamento
+slider48:0.000<0,2,0.001>Op3 Portamento
+slider49:0<-1,1,0.01>Op1 Pan Mod Depth
+slider50:0<-1,1,0.01>Op2 Pan Mod Depth
+slider51:0<-1,1,0.01>Op3 Pan Mod Depth
+slider52:0<-48,48,0.01>Op1 Pitch Mod Depth
+slider53:0<-48,48,0.01>Op2 Pitch Mod Depth
+slider54:0<-48,48,0.01>Op3 Pitch Mod Depth
+slider55:0<-1.5,1.5,0.001>Op1 PWM Mod Depth
+slider56:0<-1.5,1.5,0.001>Op2 PWM Mod Depth
+slider57:0<-1.5,1.5,0.001>Op3 PWM Mod Depth
+slider58:0<0,3,1{Off,LFO1,LFO2,LFO3}>Op1 LFO Rate Mod Target
+slider59:0<0,3,1{Off,LFO1,LFO2,LFO3}>Op2 LFO Rate Mod Target
+slider60:0<0,3,1{Off,LFO1,LFO2,LFO3}>Op3 LFO Rate Mod Target
+slider61:0<-2,2,0.01>Op1 LFO Rate Mod Depth
+slider62:0<-2,2,0.01>Op2 LFO Rate Mod Depth
+slider63:0<-2,2,0.01>Op3 LFO Rate Mod Depth
+slider64:0<0,2,0.001>Op1 Mod Env Attack
+slider65:0<0,2,0.001>Op2 Mod Env Attack
+slider66:0<0,2,0.001>Op3 Mod Env Attack
+slider67:0.120<0,2,0.001>Op1 Mod Env Decay
+slider68:0.120<0,2,0.001>Op2 Mod Env Decay
+slider69:0.120<0,2,0.001>Op3 Mod Env Decay
+slider70:0<0,1,0.001>Op1 Mod Env Sustain
+slider71:0<0,1,0.001>Op2 Mod Env Sustain
+slider72:0<0,1,0.001>Op3 Mod Env Sustain
+slider73:0.120<0,3,0.001>Op1 Mod Env Release
+slider74:0.120<0,3,0.001>Op2 Mod Env Release
+slider75:0.120<0,3,0.001>Op3 Mod Env Release
+slider76:0<0,6,1{Off,SID Seq,Up,Down,Pendulum,Held Order,Random}>Op1 Arp Mode
+slider77:0<0,6,1{Off,SID Seq,Up,Down,Pendulum,Held Order,Random}>Op2 Arp Mode
+slider78:0<0,6,1{Off,SID Seq,Up,Down,Pendulum,Held Order,Random}>Op3 Arp Mode
+slider79:16<0.125,128,0.125>Op1 Arp Rate
+slider80:16<0.125,128,0.125>Op2 Arp Rate
+slider81:16<0.125,128,0.125>Op3 Arp Rate
+slider82:0<0,4,1>Op1 Arp Octave Up
+slider83:0<0,4,1>Op2 Arp Octave Up
+slider84:0<0,4,1>Op3 Arp Octave Up
+slider85:0<-4,0,1>Op1 Arp Octave Down
+slider86:0<-4,0,1>Op2 Arp Octave Down
+slider87:0<-4,0,1>Op3 Arp Octave Down
+slider88:0<0,1,0.001>Op1 Arp Glide Depth
+slider89:0<0,1,0.001>Op2 Arp Glide Depth
+slider90:0<0,1,0.001>Op3 Arp Glide Depth
+slider91:2<0,96,1>Op1 Pitch Bend
+slider92:2<0,96,1>Op2 Pitch Bend
+slider93:2<0,96,1>Op3 Pitch Bend
+slider94:0<0,1,1{Off,On}>Op1 Ring From Op3
+slider95:0<0,1,1{Off,On}>Op2 Ring From Op1
+slider96:0<0,1,1{Off,On}>Op3 Ring From Op2
+slider97:0<0,1,1{Off,On}>Op1 Sync By Op3
+slider98:0<0,1,1{Off,On}>Op2 Sync By Op1
+slider99:0<0,1,1{Off,On}>Op3 Sync By Op2
+slider100:0<0,1,1{Off,On}>Op1 Test Bit
+slider101:0<0,1,1{Off,On}>Op2 Test Bit
+slider102:0<0,1,1{Off,On}>Op3 Test Bit
+slider103:0<0,1,1{Off,On}>Voice 3 Off
+slider104:0<0,5,1{Off,Filter Cutoff,Op1 Pitch,Op2 Pitch,Op1 PWM,Op2 PWM}>Op3 OSC Mod Target
+slider105:0<-1,1,0.001>Op3 OSC Mod Depth
+slider106:0<0,5,1{Off,Filter Cutoff,Op1 Pitch,Op2 Pitch,Op1 PWM,Op2 PWM}>Op3 ENV Mod Target
+slider107:0<-1,1,0.001>Op3 ENV Mod Depth
+slider108:1200<-2047,2047,1>Filter Cutoff
+slider109:0<0,15,0.1>Filter Resonance
+slider110:1<0,1,1{Off,On}>Filter Low Pass
+slider111:0<0,1,1{Off,On}>Filter Band Pass
+slider112:0<0,1,1{Off,On}>Filter High Pass
+slider113:0<-1,1,0.001>Filter Key Follow
+slider114:1<0,1,1{Off,On}>Op1 To Filter
+slider115:1<0,1,1{Off,On}>Op2 To Filter
+slider116:1<0,1,1{Off,On}>Op3 To Filter
+slider117:0<-2047,2047,1>Filter Env Amount
+slider118:0.002<0,2,0.001>Filter Attack
+slider119:0.120<0,2,0.001>Filter Decay
+slider120:0.70<0,1,0.001>Filter Sustain
+slider121:0.120<0,3,0.001>Filter Release
+slider122:0<0,1,1{Free,Trigger}>LFO1 Mode
+slider123:1<0.125,512,0.125>LFO1 Rate
+slider124:1<0,6,1{Sine,Triangle,Saw Up,Saw Down,Square,Sample Hold,Smooth Random}>LFO1 Wave
+slider125:0<0,1,0.01>LFO1 Upper Squash
+slider126:0<0,1,0.01>LFO1 Lower Squash
+slider127:0<0,10,0.001>LFO1 Delay
+slider128:0<0,1,0.001>LFO1 Smooth
+slider129:0<0,1,1{Off,On}>LFO1 One Shot
+slider130:1<0,1,0.001>LFO1 One Shot Length
+slider131:0<0,1,0.001>LFO1 Phase
+slider132:0<-1,1,0.001>LFO1 Cutoff Depth
+slider133:0<-96,96,0.01>LFO1 Op1 Pitch Depth
+slider134:0<-96,96,0.01>LFO1 Op2 Pitch Depth
+slider135:0<-96,96,0.01>LFO1 Op3 Pitch Depth
+slider136:0<-1.5,1.5,0.001>LFO1 Op1 PWM Depth
+slider137:0<-1.5,1.5,0.001>LFO1 Op2 PWM Depth
+slider138:0<-1.5,1.5,0.001>LFO1 Op3 PWM Depth
+slider139:0<-1,1,0.001>LFO1 Op1 Level Depth
+slider140:0<-1,1,0.001>LFO1 Op2 Level Depth
+slider141:0<-1,1,0.001>LFO1 Op3 Level Depth
+slider142:0<-1,1,0.001>LFO1 Op1 Pan Depth
+slider143:0<-1,1,0.001>LFO1 Op2 Pan Depth
+slider144:0<-1,1,0.001>LFO1 Op3 Pan Depth
+slider145:0<0,1,1{Free,Trigger}>LFO2 Mode
+slider146:1<0.125,512,0.125>LFO2 Rate
+slider147:1<0,6,1{Sine,Triangle,Saw Up,Saw Down,Square,Sample Hold,Smooth Random}>LFO2 Wave
+slider148:0<0,1,0.01>LFO2 Upper Squash
+slider149:0<0,1,0.01>LFO2 Lower Squash
+slider150:0<0,10,0.001>LFO2 Delay
+slider151:0<0,1,0.001>LFO2 Smooth
+slider152:0<0,1,1{Off,On}>LFO2 One Shot
+slider153:1<0,1,0.001>LFO2 One Shot Length
+slider154:0<0,1,0.001>LFO2 Phase
+slider155:0<-1,1,0.001>LFO2 Cutoff Depth
+slider156:0<-96,96,0.01>LFO2 Op1 Pitch Depth
+slider157:0<-96,96,0.01>LFO2 Op2 Pitch Depth
+slider158:0<-96,96,0.01>LFO2 Op3 Pitch Depth
+slider159:0<-1.5,1.5,0.001>LFO2 Op1 PWM Depth
+slider160:0<-1.5,1.5,0.001>LFO2 Op2 PWM Depth
+slider161:0<-1.5,1.5,0.001>LFO2 Op3 PWM Depth
+slider162:0<-1,1,0.001>LFO2 Op1 Level Depth
+slider163:0<-1,1,0.001>LFO2 Op2 Level Depth
+slider164:0<-1,1,0.001>LFO2 Op3 Level Depth
+slider165:0<-1,1,0.001>LFO2 Op1 Pan Depth
+slider166:0<-1,1,0.001>LFO2 Op2 Pan Depth
+slider167:0<-1,1,0.001>LFO2 Op3 Pan Depth
+slider168:0<0,1,1{Free,Trigger}>LFO3 Mode
+slider169:1<0.125,512,0.125>LFO3 Rate
+slider170:1<0,6,1{Sine,Triangle,Saw Up,Saw Down,Square,Sample Hold,Smooth Random}>LFO3 Wave
+slider171:0<0,1,0.01>LFO3 Upper Squash
+slider172:0<0,1,0.01>LFO3 Lower Squash
+slider173:0<0,10,0.001>LFO3 Delay
+slider174:0<0,1,0.001>LFO3 Smooth
+slider175:0<0,1,1{Off,On}>LFO3 One Shot
+slider176:1<0,1,0.001>LFO3 One Shot Length
+slider177:0<0,1,0.001>LFO3 Phase
+slider178:0<-1,1,0.001>LFO3 Cutoff Depth
+slider179:0<-96,96,0.01>LFO3 Op1 Pitch Depth
+slider180:0<-96,96,0.01>LFO3 Op2 Pitch Depth
+slider181:0<-96,96,0.01>LFO3 Op3 Pitch Depth
+slider182:0<-1.5,1.5,0.001>LFO3 Op1 PWM Depth
+slider183:0<-1.5,1.5,0.001>LFO3 Op2 PWM Depth
+slider184:0<-1.5,1.5,0.001>LFO3 Op3 PWM Depth
+slider185:0<-1,1,0.001>LFO3 Op1 Level Depth
+slider186:0<-1,1,0.001>LFO3 Op2 Level Depth
+slider187:0<-1,1,0.001>LFO3 Op3 Level Depth
+slider188:0<-1,1,0.001>LFO3 Op1 Pan Depth
+slider189:0<-1,1,0.001>LFO3 Op2 Pan Depth
+slider190:0<-1,1,0.001>LFO3 Op3 Pan Depth
+@init
+// This instrument produces exact silence from silence. Ask REAPER to detect the real
+// output tail automatically, then allow host-side auto-bypass once the state settles.
+// -1 is the documented automatic-tail mode; unlike -2 it does NOT claim zero state/tail.
+ext_tail_size = -1;
+// There is no audio input (in_pin:none), so input anti-denormal noise is unnecessary
+// and can only make exact-silence detection less clean.
+ext_nodenorm = 1;
+
+two_pi = 2*$pi;
+inv_srate = 1 / srate;
+log2 = log(2);
+
+mono_output_fast_safe = 1;
+op1_note = -1; op2_note = -1; op3_note = -1;
+op1_target_note = -1; op2_target_note = -1; op3_target_note = -1;
+op1_cur_note = -1; op2_cur_note = -1; op3_cur_note = -1;
+op1_held_count = 0; op2_held_count = 0; op3_held_count = 0; chord_arp_count = 0;
+// Chord Allocate Poly 2: fixed rotating operator registers.
+filter_held_count = 0;
+op1_stack = 1000; op2_stack = 1040; op3_stack = 1080; filter_stack = 1120; chord_arp_stack = 1160;
+op1_arp_pool = 1200; op2_arp_pool = 1340; op3_arp_pool = 1480; arp_tmp = 1620;
+op1_arp_latch = 2300; op2_arp_latch = 2440; op3_arp_latch = 2580;
+op1_sid_seq = 2800; op2_sid_seq = 3060; op3_sid_seq = 3320; // 128 active + 128 shadow slots each
+op1_arp_latch_count = 0; op2_arp_latch_count = 0; op3_arp_latch_count = 0;
+op1_arp_latch_root = 60; op2_arp_latch_root = 60; op3_arp_latch_root = 60;
+op1_arp_release_base = 60; op2_arp_release_base = 60; op3_arp_release_base = 60;
+// SID Seq is a dynamic-length frequency sequence: 128 max capacity, actual length grows as notes are added.
+sid_seq_empty = -9999;
+op1_arp_clock = 0; op2_arp_clock = 0; op3_arp_clock = 0;
+op1_arp_step_idx = -1; op2_arp_step_idx = -1; op3_arp_step_idx = -1;
+op1_arp_pitch_semi = 0; op2_arp_pitch_semi = 0; op3_arp_pitch_semi = 0;
+op1_arp_pitch_tgt = 0; op2_arp_pitch_tgt = 0; op3_arp_pitch_tgt = 0;
+op1_arp_pitch_cur = 0; op2_arp_pitch_cur = 0; op3_arp_pitch_cur = 0;
+op1_arp_seed = 101; op2_arp_seed = 202; op3_arp_seed = 303;
+op1_sid_seq_last = -1; op2_sid_seq_last = -1; op3_sid_seq_last = -1;
+op1_sid_seq_len = 0; op2_sid_seq_len = 0; op3_sid_seq_len = 0;
+i = 0;
+loop(128,
+  op1_sid_seq[i] = sid_seq_empty; op1_sid_seq[128 + i] = sid_seq_empty;
+  op2_sid_seq[i] = sid_seq_empty; op2_sid_seq[128 + i] = sid_seq_empty;
+  op3_sid_seq[i] = sid_seq_empty; op3_sid_seq[128 + i] = sid_seq_empty;
+  i += 1;
+);
+op1_gate = 0; op2_gate = 0; op3_gate = 0;
+op1_bend = 0; op2_bend = 0; op3_bend = 0;
+op1_env = 0; op2_env = 0; op3_env = 0;
+// Keep each release coefficient fixed from the exact Note Off.
+op1_rel_latched = 1; op2_rel_latched = 1; op3_rel_latched = 1;
+op1_mod_rel_latched = 1; op2_mod_rel_latched = 1; op3_mod_rel_latched = 1;
+op1_stage = 0; op2_stage = 0; op3_stage = 0; // 0 idle, 1 attack, 2 decay, 3 sustain, 4 release
+op1_mod_env = 0; op2_mod_env = 0; op3_mod_env = 0;
+op1_mod_stage = 0; op2_mod_stage = 0; op3_mod_stage = 0; // independent pitch ADSR
+op1_phase = 0; op2_phase = 0; op3_phase = 0;
+op1_prevphase = 0; op2_prevphase = 0; op3_prevphase = 0;
+op1_noise = 0; op2_noise = 0; op3_noise = 0;
+op1_noise_clock = 0; op2_noise_clock = 0; op3_noise_clock = 0;
+op1_seed = 1234567; op2_seed = 2345678; op3_seed = 3456789;
+op1_sid_seed = 5930003; op2_sid_seed = 3592873; op3_sid_seed = 7281093;
+filter_key_note = 60;
+op3_mod_prev = 0;
+
+lfo1_phase = 0; lfo2_phase = 0; lfo3_phase = 0;
+lfo1_age = 2; lfo2_age = 2; lfo3_age = 2;
+lfo1_delay_clock = 1000000; lfo2_delay_clock = 1000000; lfo3_delay_clock = 1000000;
+lfo1_active = 1; lfo2_active = 1; lfo3_active = 1;
+lfo1_out = 0; lfo2_out = 0; lfo3_out = 0;
+lfo1_smooth_out = 0; lfo2_smooth_out = 0; lfo3_smooth_out = 0;
+lfo1_sh = 0; lfo2_sh = 0; lfo3_sh = 0;
+lfo1_seed = 7654321; lfo2_seed = 8765432; lfo3_seed = 9876543;
+
+// Independent Note-On drift for the three operators.
+// Each normalized value (-1..+1) is refreshed only when that operator receives a Note On.
+drift1_unit = 0; drift2_unit = 0; drift3_unit = 0;
+drift1_seed = 24681357; drift2_seed = 97531864; drift3_seed = 19283746;
+
+filter_lp = 0;
+filter_bp = 0;
+filter_hp = 0;
+filter_r4_body_lp = 0;
+filter_env = 0;
+filter_rel_latched = 1;
+filter_stage = 0; // 0 idle, 1 attack, 2 decay, 3 sustain, 4 release
+
+// SID/C64-style final analogue output state.
+// One state for the summed stereo bus and one for each artificial multichannel bus.
+out_lp_mix = 0; out_hp_x_mix = 0; out_hp_y_mix = 0;
+out_lp_op1 = 0; out_hp_x_op1 = 0; out_hp_y_op1 = 0;
+out_lp_op2 = 0; out_hp_x_op2 = 0; out_hp_y_op2 = 0;
+out_lp_op3 = 0; out_hp_x_op3 = 0; out_hp_y_op3 = 0;
+out_lp_filter = 0; out_hp_x_filter = 0; out_hp_y_filter = 0;
+
+// -------------------- TRUE BAND-LIMITED OSCILLATOR TABLES --------------------
+// Ten mip levels contain 1,2,4,...512 harmonics. They are built once at @init.
+// At run time an oscillator only reads/interpolates the table whose highest harmonic
+// stays below 45% of sample rate. No oscillator oversampling is required for normal waves.
+aa_tbl_n = 2048;
+aa_tbl_stride = aa_tbl_n + 1;
+aa_tbl_levels = 10;
+aa_saw_base = 10000;
+aa_tri_base = aa_saw_base + aa_tbl_stride * aa_tbl_levels;
+aa_square_base = aa_tri_base + aa_tbl_stride * aa_tbl_levels;
+
+aa_i = 0;
+loop(aa_tbl_n + 1,
+  aa_ph = aa_i / aa_tbl_n;
+  aa_saw_sum = 0;
+  aa_tri_sum = 0;
+  aa_h = 1;
+  aa_target = 1;
+  aa_lev = 0;
+  loop(512,
+    aa_ang = two_pi * aa_h * aa_ph;
+    aa_saw_sum += sin(aa_ang) / aa_h;
+    (aa_h % 2) == 1 ? aa_tri_sum += cos(aa_ang) / (aa_h * aa_h);
+    aa_h == aa_target ? (
+      aa_saw_base[aa_lev * aa_tbl_stride + aa_i] = (-2 / $pi) * aa_saw_sum;
+      aa_tri_base[aa_lev * aa_tbl_stride + aa_i] = (-8 / ($pi * $pi)) * aa_tri_sum;
+      aa_lev += 1;
+      aa_target *= 2;
+    );
+    aa_h += 1;
+  );
+  aa_i += 1;
+);
+
+// Precompute the exact 50% Pulse/Square result produced by the current two-Saw
+// construction. Because a half-cycle is exactly 1024 samples in a 2048 table,
+// linear interpolation of this difference is algebraically the same waveform while
+// requiring one table read instead of two at run time.
+aa_lev = 0;
+loop(aa_tbl_levels,
+  aa_b = aa_saw_base + aa_lev * aa_tbl_stride;
+  aa_sq_b = aa_square_base + aa_lev * aa_tbl_stride;
+  aa_i = 0;
+  loop(aa_tbl_n + 1,
+    aa_shift_i = aa_i + aa_tbl_n * 0.5;
+    aa_shift_i >= aa_tbl_n ? aa_shift_i -= aa_tbl_n;
+    aa_sq_b[aa_i] = aa_b[aa_shift_i] - aa_b[aa_i];
+    aa_i += 1;
+  );
+  aa_lev += 1;
+);
+
+function note_hz(note) (
+  440 * exp(log2 * ((note - 69) / 12));
+);
+
+function softclip(x) local(ax) (
+  ax = abs(x);
+  x / (1 + ax);
+);
+
+// Final SID output amplifier. Deliberately subtle: the filter/oscillator models
+// retain their character, while the last stage contributes a small analogue
+// asymmetry and peak rounding before the external RC network.
+function sid_output_amp(x) local(z, drive, clipped) (
+  // Model constants are cached in @slider. This function is called twice in
+  // Stereo and up to ten times in Multichannel, so avoid resolving the model here.
+  z = x + sid_amp_bias_cached;
+  drive = z >= 0 ? sid_amp_pos_drive_cached : sid_amp_neg_drive_cached;
+  clipped = softclip(z * drive) / drive;
+  (z * sid_amp_dry_cached + clipped * sid_amp_wet_cached) * sid_amp_makeup_cached;
+);
+
+function poly_blep(t, dt)
+local(x) (
+  dt = max(0.0000001, min(0.5, dt));
+  t < dt ? (
+    x = t / dt;
+    x + x - x * x - 1;
+  ) : (
+    t > 1 - dt ? (
+      x = (t - 1) / dt;
+      x * x + x + x + 1;
+    ) : 0;
+  );
+);
+
+function wrap01(x) (
+  x -= floor(x);
+  x < 0 ? x += 1;
+  x;
+);
+
+// Pick the richest mip that still leaves a 10% guard band below Nyquist.
+// Hmax ~= 0.45/inc, quantized downward to powers of two. Pure comparisons keep this cheap.
+function aa_mip_level(inc) (
+  inc <= 0.00087890625 ? 9 :
+  inc <= 0.00175781250 ? 8 :
+  inc <= 0.00351562500 ? 7 :
+  inc <= 0.00703125000 ? 6 :
+  inc <= 0.01406250000 ? 5 :
+  inc <= 0.02812500000 ? 4 :
+  inc <= 0.05625000000 ? 3 :
+  inc <= 0.11250000000 ? 2 :
+  inc <= 0.22500000000 ? 1 : 0;
+);
+
+// Fast table read for phases already guaranteed in [0,1). Oscillator accumulators
+// are wrapped before osc_wave(), so paying another wrap/floor here is redundant.
+function aa_tbl_read01(base, lev, ph)
+local(pos, idx, frac, b) (
+  b = base + lev * aa_tbl_stride;
+  pos = ph * aa_tbl_n;
+  idx = floor(pos);
+  frac = pos - idx;
+  b[idx] + (b[idx + 1] - b[idx]) * frac;
+);
+
+function aa_wt_saw_lev(ph, lev) (
+  aa_tbl_read01(aa_saw_base, lev, ph);
+);
+
+function aa_wt_tri_lev(ph, lev) (
+  aa_tbl_read01(aa_tri_base, lev, ph);
+);
+
+function aa_wt_pulse_lev(ph, pw, lev)
+local(a, b, p2) (
+  pw = max(0.0002, min(0.9998, pw));
+  pw == 0.5 ? (
+    // Dedicated 50% Square mip: one interpolation instead of two Saw reads.
+    aa_tbl_read01(aa_square_base, lev, ph);
+  ) : (
+    p2 = ph - pw;
+    p2 < 0 ? p2 += 1;
+    a = aa_tbl_read01(aa_saw_base, lev, p2);
+    b = aa_tbl_read01(aa_saw_base, lev, ph);
+    a - b + 2 * pw - 1;
+  );
+);
+
+function blep_saw(ph, dt)
+local(v) (
+  v = 2 * ph - 1;
+  v -= poly_blep(ph, dt);
+  max(-1, min(1, v));
+);
+
+function blep_pulse(ph, pw, dt)
+local(v, t2) (
+  pw = max(0.0002, min(0.9998, pw));
+  v = ph < pw ? 1 : -1;
+  v += poly_blep(ph, dt);
+  t2 = wrap01(ph - pw);
+  v -= poly_blep(t2, dt);
+  max(-1, min(1, v));
+);
+
+function blep_ring_sign(ph, dt)
+local(v, t2) (
+  // +1 for the first half-cycle, -1 for the second half-cycle.
+  // This is the SID ring source MSB, but with band-limited edges.
+  v = ph < 0.5 ? 1 : -1;
+  v += poly_blep(ph, dt);
+  t2 = wrap01(ph - 0.5);
+  v -= poly_blep(t2, dt);
+  max(-1, min(1, v));
+);
+
+function aa_energy_comp(inc, wave, ring_on, sync_on, osf, aa_on)
+local(x, c, edge_bonus) (
+  // BLEP removes the ugly foldback, but on this deliberately low-fi SID core
+  // it can also make the top register feel too small. This is not a hi-fi EQ;
+  // it is a small oscillator-level make-up that grows only when the increment is high.
+  aa_on ? (
+    x = min(1, max(0, inc * 14));
+    edge_bonus = 0;
+    (wave == 1 || wave == 2 || wave == 6 || wave == 7) ? edge_bonus += 0.16; // saw/pulse-heavy
+    ring_on ? edge_bonus += 0.28;
+    sync_on ? edge_bonus += 0.14;
+    c = 1 + x * (0.16 + edge_bonus);
+    osf >= 8 ? c *= 1.035;
+    osf >= 16 ? c *= 1.025;
+    min(1.85, c);
+  ) : 1;
+);
+
+
+function next_noise(seed*) (
+  seed = (seed * 1103515245 + 12345) % 2147483647;
+  (seed / 1073741823.5) - 1;
+);
+
+function bit_at(v, b) (
+  floor(v / (2 ^ b)) % 2;
+);
+
+function next_sid23_noise(seed*)
+local(bit17, bit22, fb, out) (
+  // SID-style noise core: a 23-bit Fibonacci LFSR using taps 17 and 22.
+  // The audible byte is assembled from selected register bits, like the SID noise DAC path.
+  // Keep state non-zero so it cannot lock up silently.
+  seed = floor(seed) % 8388608;
+  seed <= 0 ? seed = 8388607;
+  bit17 = bit_at(seed, 17);
+  bit22 = bit_at(seed, 22);
+  fb = (bit17 + bit22) % 2;
+  seed = (seed * 2) % 8388608 + fb;
+
+  out = bit_at(seed, 22) * 128 + bit_at(seed, 20) * 64 + bit_at(seed, 16) * 32 + bit_at(seed, 13) * 16 + bit_at(seed, 11) * 8 + bit_at(seed, 7) * 4 + bit_at(seed, 4) * 2 + bit_at(seed, 2);
+
+  (out / 127.5) - 1;
+);
+
+function next_noise_blend(seed*, sid_seed*, sid_amt)
+local(clean, sidv, a) (
+  // Noise Character: 0 is the previous clean core; 1 is the SID 23-bit LFSR color.
+  // The two states are kept separate, so Character 0 stays exactly like the older synth.
+  a = max(0, min(1, sid_amt));
+  a <= 0 ? (
+    next_noise(seed);
+  ) : (
+    clean = next_noise(seed);
+    sidv = next_sid23_noise(sid_seed);
+    clean * (1 - a) + sidv * a;
+  );
+);
+
+function held_add(base, count*, note)
+local(i) (
+  // Do not collapse duplicate Note On events.
+  // Some keyboards, arpeggiators and REAPER MIDI items can send the same pitch again
+  // before the previous Note Off. If duplicates are ignored, the first Note Off
+  // releases the voice even though a second gate is still physically held.
+  count >= 16 ? (
+    // Small deterministic overflow guard: keep the newest 15 notes, drop the oldest.
+    i = 0;
+    loop(15,
+      base[i] = base[i + 1];
+      i += 1;
+    );
+    count = 15;
+  );
+  base[count] = note;
+  count += 1;
+);
+
+function held_remove(base, count*, note)
+local(i, j, found) (
+  // Remove the newest matching note. This preserves the stack order better for legato return
+  // and handles repeated same-note gates safely.
+  found = -1;
+  i = 0;
+  loop(count,
+    base[i] == note ? found = i;
+    i += 1;
+  );
+  found >= 0 ? (
+    j = found;
+    loop(count - found - 1,
+      base[j] = base[j + 1];
+      j += 1;
+    );
+    count -= 1;
+  );
+);
+
+function held_top(base, count) (
+  count > 0 ? base[count - 1] : -1;
+);
+
+function arp_latch_copy(src, count, dst, latch_count*, latch_root*)
+local(i) (
+  latch_count = 0;
+  count > 0 ? (
+    // ARP root is the first note that started the current arp phrase.
+    // New note-ons may extend the pool, but they must not instantly transpose
+    // the oscillator outside the arp clock.
+    latch_root = src[0];
+    i = 0;
+    loop(min(32, count),
+      dst[i] = src[i];
+      latch_count += 1;
+      i += 1;
+    );
+  );
+);
+
+function arp_latch_clear(latch_count*) (
+  latch_count = 0;
+);
+
+function arp_build_pool(base, count, pool, mode, oct_up, oct_down)
+local(i, j, n, exists, src_count, swap, pool_count, octv, lin_count) (
+  // Build a frequency-arpeggio note pool from the notes that are already held.
+  // This is deliberately NOT MIDI Note On arpeggiation: it only later offsets oscillator frequency.
+  mode = floor(mode + 0.5);
+  oct_up = max(0, floor(oct_up + 0.5));
+  oct_down = abs(min(0, floor(oct_down + 0.5)));
+
+  // Unique notes for musical ARP pools. The held stack itself still keeps duplicates
+  // for correct gate/note-off behavior, but the ARP should not double-step a duplicate note.
+  src_count = 0;
+  i = 0;
+  loop(count,
+    n = base[i];
+    exists = 0;
+    j = 0;
+    loop(src_count,
+      arp_tmp[j] == n ? exists = 1;
+      j += 1;
+    );
+    (!exists && src_count < 16) ? (
+      arp_tmp[src_count] = n;        // sorted workspace
+      arp_tmp[32 + src_count] = n;   // original held order workspace
+      src_count += 1;
+    );
+    i += 1;
+  );
+
+  // Sort ascending for UP/DOWN/PENDULUM/RANDOM. Held Order uses arp_tmp[32..].
+  i = 0;
+  loop(max(0, src_count - 1),
+    j = i + 1;
+    loop(src_count - i - 1,
+      arp_tmp[j] < arp_tmp[i] ? (
+        swap = arp_tmp[i];
+        arp_tmp[i] = arp_tmp[j];
+        arp_tmp[j] = swap;
+      );
+      j += 1;
+    );
+    i += 1;
+  );
+
+  pool_count = 0;
+
+  src_count > 0 ? (
+    // 2 = Up
+    mode == 2 ? (
+      octv = -oct_down;
+      loop(oct_up + oct_down + 1,
+        i = 0;
+        loop(src_count,
+          pool_count < 128 ? (pool[pool_count] = arp_tmp[i] + octv * 12; pool_count += 1;);
+          i += 1;
+        );
+        octv += 1;
+      );
+    );
+
+    // 3 = Down
+    mode == 3 ? (
+      octv = oct_up;
+      loop(oct_up + oct_down + 1,
+        i = src_count - 1;
+        loop(src_count,
+          pool_count < 128 ? (pool[pool_count] = arp_tmp[i] + octv * 12; pool_count += 1;);
+          i -= 1;
+        );
+        octv -= 1;
+      );
+    );
+
+    // 4 = Pendulum, without repeating the two end points on the way back.
+    mode == 4 ? (
+      lin_count = 0;
+      octv = -oct_down;
+      loop(oct_up + oct_down + 1,
+        i = 0;
+        loop(src_count,
+          lin_count < 128 ? (arp_tmp[64 + lin_count] = arp_tmp[i] + octv * 12; lin_count += 1;);
+          i += 1;
+        );
+        octv += 1;
+      );
+
+      lin_count <= 1 ? (
+        pool_count = lin_count;
+        lin_count > 0 ? pool[0] = arp_tmp[64];
+      ) : (
+        i = 0;
+        loop(lin_count,
+          pool[pool_count] = arp_tmp[64 + i]; pool_count += 1; i += 1;
+        );
+        i = lin_count - 2;
+        loop(max(0, lin_count - 2),
+          pool_count < 128 ? (pool[pool_count] = arp_tmp[64 + i]; pool_count += 1;);
+          i -= 1;
+        );
+      );
+    );
+
+    // 5 = Held Order: LSH-2 ARP2 Free/Input Order, not sorted.
+    mode == 5 ? (
+      octv = -oct_down;
+      loop(oct_up + oct_down + 1,
+        i = 0;
+        loop(src_count,
+          pool_count < 128 ? (pool[pool_count] = arp_tmp[32 + i] + octv * 12; pool_count += 1;);
+          i += 1;
+        );
+        octv += 1;
+      );
+    );
+
+    // 6 = Random uses the same pool shape as Up; selection is random in arp_process().
+    mode == 6 ? (
+      octv = -oct_down;
+      loop(oct_up + oct_down + 1,
+        i = 0;
+        loop(src_count,
+          pool_count < 128 ? (pool[pool_count] = arp_tmp[i] + octv * 12; pool_count += 1;);
+          i += 1;
+        );
+        octv += 1;
+      );
+    );
+  );
+
+  pool_count;
+);
+
+
+function sid_seq_clear(seq, root_note, seq_len*)
+local(i) (
+  i = 0;
+  loop(128,
+    seq[i] = sid_seq_empty;
+    seq[128 + i] = sid_seq_empty;
+    i += 1;
+  );
+  seq_len = 0;
+  root_note >= 0 ? (
+    seq[0] = root_note;
+    seq[128] = root_note;
+    seq_len = 1;
+  );
+);
+
+function sid_seq_record(seq, step_idx, note, seq_len*)
+local(pos, i) (
+  // Dynamic SID-player sequence. 128 is the maximum capacity, not the playback length.
+  // A new key is inserted just after the current clock step. If that point is ahead,
+  // it can sound in the current loop; if it has just passed, it arrives at the next pass.
+  seq_len <= 0 ? (
+    seq[0] = note;
+    seq[128] = note;
+    seq_len = 1;
+  ) : (
+    seq_len < 128 ? (
+      pos = step_idx < 0 ? 0 : step_idx + 1;
+      pos < 0 ? pos = 0;
+      pos > seq_len ? pos = seq_len;
+
+      // Insert, not append-only: the note is placed at the musical clock position.
+      i = seq_len;
+      loop(seq_len - pos,
+        seq[i] = seq[i - 1];
+        seq[128 + i] = seq[128 + i - 1];
+        i -= 1;
+      );
+      seq[pos] = note;
+      seq[128 + pos] = note;
+      seq_len += 1;
+    ) : (
+      pos = step_idx < 0 ? 0 : step_idx + 1;
+      pos >= 128 ? pos = 0;
+      pos = max(0, min(127, floor(pos + 0.5)));
+      seq[pos] = note;
+      seq[128 + pos] = note;
+    );
+  );
+);
+
+function sid_seq_process(seq, seq_len, count, root_note, rate, clock*, step_idx*, pitch_semi*)
+local(new_step, sel) (
+  count > 0 && root_note >= 0 && seq_len > 0 ? (
+    clock += max(0.125, rate) * spb4_inv;
+    new_step = 0;
+
+    step_idx < 0 ? (
+      step_idx = 0;
+      clock = 0;
+      new_step = 1;
+    ) : (
+      clock >= 1 ? (
+        clock -= floor(clock);
+        step_idx += 1;
+        step_idx >= seq_len ? step_idx = 0;
+        new_step = 1;
+      );
+    );
+
+    new_step ? (
+      step_idx >= seq_len ? step_idx = 0;
+      sel = seq[step_idx];
+      sel <= sid_seq_empty + 1 ? sel = root_note;
+      pitch_semi = sel - root_note;
+    );
+  ) : (
+    clock = 0;
+    step_idx = -1;
+    pitch_semi = 0;
+  );
+
+  pitch_semi;
+);
+
+function arp_process(base, count, pool, mode, rate, oct_up, oct_down, clock*, step_idx*, pitch_semi*, rand_seed*)
+local(pool_count, new_step, root, sel, rv, rand_idx) (
+  mode = floor(mode + 0.5);
+
+  (mode > 1 && count > 0) ? (
+    clock += max(0.125, rate) * spb4_inv;
+    new_step = 0;
+
+    step_idx < 0 ? (
+      clock = 0;
+      new_step = 1;
+    ) : (
+      clock >= 1 ? (
+        clock -= floor(clock);
+        new_step = 1;
+      );
+    );
+
+    // The pool can only affect the selected pitch at a clock edge. Rebuilding
+    // and sorting it between edges was pure repeated work.
+    new_step ? (
+      pool_count = arp_build_pool(base, count, pool, mode, oct_up, oct_down);
+      root = base[0];
+
+      pool_count > 0 ? (
+        step_idx += 1;
+        step_idx >= pool_count ? step_idx = 0;
+        step_idx < 0 ? step_idx = 0;
+
+        mode == 6 ? (
+          rand_seed += 1;
+          rv = abs(sin(rand_seed * 12.9898 + 78.233) * 43758.5453);
+          rv -= floor(rv);
+          rand_idx = floor(rv * pool_count);
+          rand_idx >= pool_count ? rand_idx = pool_count - 1;
+          rand_idx < 0 ? rand_idx = 0;
+          sel = pool[rand_idx];
+        ) : (
+          sel = pool[step_idx];
+        );
+
+        pitch_semi = sel - root;
+      ) : (
+        clock = 0;
+        step_idx = -1;
+        pitch_semi = 0;
+      );
+    );
+  ) : (
+    clock = 0;
+    step_idx = -1;
+    pitch_semi = 0;
+  );
+
+  pitch_semi;
+);
+
+function arp_reset_op1() (
+  op1_arp_clock = 0;
+  op1_arp_step_idx = -1;
+  op1_arp_pitch_semi = 0;
+  op1_arp_pitch_tgt = 0;
+  op1_arp_pitch_cur = 0;
+  op1_sid_seq_last = -1;
+);
+function arp_reset_op2() (
+  op2_arp_clock = 0;
+  op2_arp_step_idx = -1;
+  op2_arp_pitch_semi = 0;
+  op2_arp_pitch_tgt = 0;
+  op2_arp_pitch_cur = 0;
+  op2_sid_seq_last = -1;
+);
+function arp_reset_op3() (
+  op3_arp_clock = 0;
+  op3_arp_step_idx = -1;
+  op3_arp_pitch_semi = 0;
+  op3_arp_pitch_tgt = 0;
+  op3_arp_pitch_cur = 0;
+  op3_sid_seq_last = -1;
+);
+
+
+function sid_dac_and2(a, b)
+local(ia, ib, io) (
+  // SID docs describe simultaneous non-noise waveforms as a logical AND.
+  // This is an 8-bit DAC approximation: unipolar DAC values are ANDed,
+  // then converted back to the synth's bipolar audio range.
+  ia = floor(max(0, min(255, (a + 1) * 127.5)) + 0.5);
+  ib = floor(max(0, min(255, (b + 1) * 127.5)) + 0.5);
+  io = ia & ib;
+  (io / 127.5) - 1;
+);
+
+function sid_dac_and3(a, b, c)
+local(ia, ib, ic, io) (
+  ia = floor(max(0, min(255, (a + 1) * 127.5)) + 0.5);
+  ib = floor(max(0, min(255, (b + 1) * 127.5)) + 0.5);
+  ic = floor(max(0, min(255, (c + 1) * 127.5)) + 0.5);
+  io = ia & ib & ic;
+  (io / 127.5) - 1;
+);
+
+
+// Continuous SID-style AND for the band-limited combined-wave path.
+// In unipolar DAC space, multiplication is the smooth analogue of a logical AND.
+// Unlike the 8-bit integer AND it creates no sample-scale staircase by itself.
+function sid_aa_and2(a, b)
+local(ua, ub) (
+  ua = (a + 1) * 0.5;
+  ub = (b + 1) * 0.5;
+  2 * (ua * ub) - 1;
+);
+
+function sid_aa_and3(a, b, c)
+local(ua, ub, uc) (
+  ua = (a + 1) * 0.5;
+  ub = (b + 1) * 0.5;
+  uc = (c + 1) * 0.5;
+  2 * (ua * ub * uc) - 1;
+);
+
+// Alias-controlled combined SID waves.
+// The source tables are deliberately read with extra spectral headroom in osc_wave:
+// 2-way combinations get about half the primitive bandwidth, the 3-way combination
+// gets about one quarter. Therefore the polynomial interaction products remain below
+// Nyquist without running the whole oscillator at a higher sample rate.
+// No quantizer, hard clip or waveshaper is used here: each of those would generate a
+// fresh unlimited harmonic series after the mip-map had already done its job.
+// Analytic mean of the AA combined-wave equations. The primitive Saw/Triangle are
+// zero-mean and Pulse has mean (2*pw-1). Removing this mean BEFORE the shared +3/+4 dB
+// makeup prevents two/three-note chords from stacking a large negative DC bias into the
+// SID output saturation. This changes only the waveform baseline, not its AC shape.
+function sid_combo5_dc(pw, model)
+local(d, dc) (
+  d = max(0.0002, min(0.9998, pw));
+  // Triangle changes slope at half-cycle, so its pulse-gated mean is piecewise quadratic.
+  // This is the exact analytic mean of the current AA Triangle+Pulse equations, before
+  // the shared +3 dB composite makeup. Horner form keeps the runtime cost tiny.
+  model >= 1 ? (
+    d <= 0.5 ?
+      dc = (1.831168 * d - 0.030912) * d - 0.884672 :
+      dc = (-1.831168 * d + 3.631424) * d - 1.800256;
+  ) : (
+    d <= 0.5 ?
+      dc = (1.969408 * d - 0.00677376) * d - 0.97793024 :
+      dc = (-1.969408 * d + 3.93204224) * d - 1.96263424;
+  );
+  dc;
+);
+
+function sid_combo6_dc(pw, model)
+local(d, dc) (
+  d = max(0.0002, min(0.9998, pw));
+  // Horner form: two multiplies in the steady-state path.
+  model >= 1 ?
+    dc = (1.062864 * d - 0.200304) * d - 0.86256 :
+    dc = (0.984704 * d - 0.00620928) * d - 0.97849472;
+  dc;
+);
+
+function sid_combo7_dc(pw, model)
+local(d, dc) (
+  d = max(0.0002, min(0.9998, pw));
+  // Piecewise cubic because Triangle changes slope at half-cycle. Horner form keeps
+  // the correction cheap enough to use even when PWM is moving at audio rate.
+  model >= 1 ? (
+    d <= 0.5 ?
+      dc = ((1.0602368 * d + 0.1295952) * d + 0.0545664) * d - 0.8361024 :
+      dc = ((-1.0602368 * d + 1.5835344) * d + 0.1909824) * d - 1.002736;
+  ) : (
+    d <= 0.5 ?
+      dc = ((1.17512533333333 * d + 0.095316) * d - 0.0063544) * d - 0.9385336 :
+      dc = ((-1.17512533333333 * d + 1.730916) * d + 0.1207336) * d - 1.11719626666667;
+  );
+  dc;
+);
+
+function sid_combo_wave_aa(wave, tri, saw, pul, pw, model)
+local(andv, analog, gate, out, pull) (
+  wave == 4 ? ( // Triangle + Saw: zero-DC band-limited blend, maximum polynomial order 2
+    // The previous continuous unipolar AND strongly reintroduced the triangle and a large
+    // negative DC term, so Triangle+Saw sounded almost like Triangle and could click while
+    // the output HP removed the offset. Keep the combination explicitly zero-mean instead:
+    // direct Saw supplies the missing edge/brightness, Triangle keeps SID body, and the
+    // small bipolar product adds combined-wave character without creating unlimited spectrum.
+    model >= 1 ? (
+      // 6581: a little more body/nonlinear interaction, still clearly Saw-bearing.
+      out = 0.45 * tri + 0.55 * saw + 0.34 * tri * saw;
+    ) : (
+      // 8580: cleaner/brighter combined wave with stronger direct Saw contribution.
+      out = 0.40 * tri + 0.60 * saw + 0.28 * tri * saw;
+    );
+  );
+
+  wave == 5 ? ( // Triangle + Pulse: maximum polynomial order 2
+    andv = sid_aa_and2(tri, pul);
+    gate = (pul + 1) * 0.5;
+    model >= 1 ? (
+      pull = gate * tri + (1 - gate) * (-0.72 + 0.16 * tri);
+      analog = 0.52 * andv + 0.56 * pull;
+      out = andv * 0.50 + analog * 0.50;
+      out *= 0.92;
+    ) : (
+      pull = gate * tri + (1 - gate) * -0.88;
+      analog = 0.78 * andv + 0.24 * pull;
+      out = andv * 0.76 + analog * 0.24;
+      out *= 0.98;
+    );
+  );
+
+  wave == 6 ? ( // Saw + Pulse: maximum polynomial order 2
+    andv = sid_aa_and2(saw, pul);
+    gate = (pul + 1) * 0.5;
+    model >= 1 ? (
+      pull = gate * saw + (1 - gate) * (-0.70 + 0.12 * saw);
+      analog = 0.50 * andv + 0.60 * pull + 0.16 * saw * pul;
+      out = andv * 0.48 + analog * 0.52;
+      out *= 0.90;
+    ) : (
+      pull = gate * saw + (1 - gate) * -0.88;
+      analog = 0.80 * andv + 0.22 * pull;
+      out = andv * 0.76 + analog * 0.24;
+      out *= 0.98;
+    );
+  );
+
+  wave == 7 ? ( // Triangle + Saw + Pulse: maximum polynomial order 3
+    andv = sid_aa_and3(tri, saw, pul);
+    gate = (pul + 1) * 0.5;
+    model >= 1 ? (
+      pull = gate * (0.50 * tri + 0.50 * saw + 0.32 * tri * saw) + (1 - gate) * (-0.76 + 0.08 * tri);
+      analog = 0.46 * andv + 0.70 * pull;
+      out = andv * 0.42 + analog * 0.58;
+      out *= 0.84;
+    ) : (
+      pull = gate * (0.50 * tri + 0.50 * saw) + (1 - gate) * -0.90;
+      analog = 0.76 * andv + 0.26 * pull;
+      out = andv * 0.74 + analog * 0.26;
+      out *= 0.94;
+    );
+  );
+
+  // Pulse-bearing AA composites can carry a same-sign negative DC offset. Waves 6/7
+  // were the severe cases fixed in v2.27; Triangle+Pulse (5) has the same mechanism at
+  // lower magnitude and can still make multi-note chords drive sid_output_amp() early.
+  // Center the analytic mean BEFORE level compensation; AC waveform shape is unchanged.
+  wave == 5 ? out -= sid_combo5_dc(pw, model);
+  wave == 6 ? out -= sid_combo6_dc(pw, model);
+  wave == 7 ? out -= sid_combo7_dc(pw, model);
+
+  // Same broad level matching as the historical SID path, but deliberately no clipping.
+  out *= 1.412537545;
+  wave == 4 ? out *= 1.258925412;
+  (wave == 6 || wave == 7) ? out *= 1.584893192;
+  out;
+);
+
+function sid_combo_wave(wave, tri, saw, pul, char_amt, model)
+local(ch, andv, analog, gate, out, pull, levels, q) (
+  ch = min(1, char_amt / 16);
+
+  // Only the documented/useful SID combinations are kept here:
+  // TRI+SAW, TRI+PULSE, SAW+PULSE, TRI+SAW+PULSE.
+  // Noise combined with other waves is deliberately not offered because on the real SID
+  // it can collapse/zero the noise LFSR and is more a special abuse than a normal voice color.
+  wave == 4 ? ( // Triangle + Saw
+    andv = sid_dac_and2(tri, saw);
+    model >= 1 ? (
+      analog = softclip((0.58 * andv + 0.30 * tri + 0.18 * saw + 0.40 * tri * saw) * (1 + 1.55 * ch));
+      out = andv * (0.55 - 0.20 * ch) + analog * (0.45 + 0.20 * ch);
+      out *= 0.88;
+    ) : (
+      analog = softclip((0.82 * andv + 0.14 * tri + 0.10 * saw + 0.18 * tri * saw) * (1 + 0.70 * ch));
+      out = andv * (0.78 - 0.18 * ch) + analog * (0.22 + 0.18 * ch);
+      out *= 0.96;
+    );
+  );
+
+  wave == 5 ? ( // Triangle + Pulse
+    andv = sid_dac_and2(tri, pul);
+    gate = (pul + 1) * 0.5;
+    model >= 1 ? (
+      // 6581 pulse mixes through the DAC bus and pulls the other waveform down.
+      pull = gate * tri + (1 - gate) * (-0.72 + 0.16 * tri);
+      analog = softclip((0.52 * andv + 0.56 * pull) * (1 + 1.35 * ch));
+      out = andv * (0.50 - 0.15 * ch) + analog * (0.50 + 0.15 * ch);
+      out *= 0.92;
+    ) : (
+      pull = gate * tri + (1 - gate) * -0.88;
+      analog = softclip((0.78 * andv + 0.24 * pull) * (1 + 0.55 * ch));
+      out = andv * (0.76 - 0.15 * ch) + analog * (0.24 + 0.15 * ch);
+      out *= 0.98;
+    );
+  );
+
+  wave == 6 ? ( // Saw + Pulse
+    andv = sid_dac_and2(saw, pul);
+    gate = (pul + 1) * 0.5;
+    model >= 1 ? (
+      pull = gate * saw + (1 - gate) * (-0.70 + 0.12 * saw);
+      analog = softclip((0.50 * andv + 0.60 * pull + 0.16 * saw * pul) * (1 + 1.45 * ch));
+      out = andv * (0.48 - 0.14 * ch) + analog * (0.52 + 0.14 * ch);
+      out *= 0.90;
+    ) : (
+      pull = gate * saw + (1 - gate) * -0.88;
+      analog = softclip((0.80 * andv + 0.22 * pull) * (1 + 0.55 * ch));
+      out = andv * (0.76 - 0.15 * ch) + analog * (0.24 + 0.15 * ch);
+      out *= 0.98;
+    );
+  );
+
+  wave == 7 ? ( // Triangle + Saw + Pulse
+    andv = sid_dac_and3(tri, saw, pul);
+    gate = (pul + 1) * 0.5;
+    model >= 1 ? (
+      pull = gate * (0.50 * tri + 0.50 * saw + 0.32 * tri * saw) + (1 - gate) * (-0.76 + 0.08 * tri);
+      analog = softclip((0.46 * andv + 0.70 * pull) * (1 + 1.75 * ch));
+      out = andv * (0.42 - 0.12 * ch) + analog * (0.58 + 0.12 * ch);
+      out *= 0.84;
+    ) : (
+      pull = gate * (0.50 * tri + 0.50 * saw) + (1 - gate) * -0.90;
+      analog = softclip((0.76 * andv + 0.26 * pull) * (1 + 0.65 * ch));
+      out = andv * (0.74 - 0.16 * ch) + analog * (0.26 + 0.16 * ch);
+      out *= 0.94;
+    );
+  );
+
+  // Composite waveforms are naturally lower after SID-style DAC AND/combo modelling;
+  // retain the common +3 dB compensation used by the Core.
+  out *= 1.412537545;
+
+  // Core level matching: Wave 4 +2 dB, Waves 6 and 7 +4 dB.
+  // Wave 5 keeps only the common compensation above.
+  wave == 4 ? out *= 1.258925412;
+  (wave == 6 || wave == 7) ? out *= 1.584893192;
+
+  // Mild quantized DAC roughness only on combined waveforms when Character is used.
+  char_amt > 0 ? (
+    levels = max(8, floor(256 / (1 + char_amt * 0.55)));
+    q = floor((out + 1) * 0.5 * (levels - 1) + 0.5) / (levels - 1);
+    out = q * 2 - 1;
+  );
+
+  max(-1, min(1, out));
+);
+
+function osc_wave(wave, ph, inc, pw, n, char_amt, model, ring_on, ring_mod_phase, ring_mod_inc, aa_on, aa_lev)
+local(tri_raw, tri, saw, pul, out, ch, levels, q, ring_sign, aa_dt, ring_dt, need_tri, need_saw, need_pul) (
+  wave = max(0, min(7, wave));
+
+  // A single SID waveform no longer pays for the other two components.
+  // Combined waves still calculate exactly the same TRI/SAW/PULSE set.
+  need_tri = (wave == 0 || wave == 4 || wave == 5 || wave == 7);
+  need_saw = (wave == 1 || wave == 4 || wave == 6 || wave == 7);
+  need_pul = (wave == 2 || wave == 5 || wave == 6 || wave == 7);
+
+  // aa_lev is selected once per operator. Static pitches cache it at block rate;
+  // dynamic pitches refresh it only when the frequency actually moves. Combined-wave
+  // headroom (2x/4x source increment) is already included in that cached selection.
+
+  need_tri ? (
+    // With Auto and no Ring/Sync, read a genuinely band-limited triangle table.
+    // Ring keeps the historical procedural path because multiplication by the modulator
+    // creates new spectrum and is handled by the emergency oversampling path instead.
+    (aa_wt_enable && !ring_on) ? (
+      tri_raw = aa_wt_tri_lev(ph, aa_lev);
+      tri = tri_raw;
+    ) : (
+      tri_raw = 1 - 4 * abs(ph - 0.5);
+      ring_sign = ring_mod_phase < 0.5 ? 1 : -1;
+      (aa_on && ring_on) ? (
+        ring_dt = max(0.0000001, ring_mod_inc);
+        ring_sign = blep_ring_sign(ring_mod_phase, ring_dt);
+      );
+      tri = ring_on ? (tri_raw * ring_sign) : tri_raw;
+    );
+  );
+
+  (need_saw || need_pul) ? aa_dt = max(0.0000001, inc);
+  need_saw ? (
+    saw = aa_wt_enable ? aa_wt_saw_lev(ph, aa_lev) : (aa_on ? blep_saw(ph, aa_dt) : (2 * ph - 1));
+  );
+  need_pul ? (
+    pul = aa_wt_enable ? aa_wt_pulse_lev(ph, pw, aa_lev) : (aa_on ? blep_pulse(ph, pw, aa_dt) : (ph < pw ? 1 : -1));
+  );
+
+  wave == 0 ? out = tri;
+  wave == 1 ? out = saw;
+  wave == 2 ? out = pul;
+  wave == 3 ? out = n;
+  wave >= 4 ? (
+    aa_wt_enable ? out = sid_combo_wave_aa(wave, tri, saw, pul, pw, model)
+                 : out = sid_combo_wave(wave, tri, saw, pul, char_amt, model);
+  );
+
+  // Character on single waves: unchanged, but normally bypassed in this synth.
+  ch = min(1, char_amt / 16);
+  (char_amt > 0 && wave < 4) ? (
+    model >= 1 ? (
+      out = softclip(out * (1 + 0.25 * ch));
+    ) : (
+      out = softclip(out * (1 + 0.10 * ch));
+    );
+    levels = max(16, floor(512 / (1 + char_amt * 0.25)));
+    q = floor((out + 1) * 0.5 * (levels - 1) + 0.5) / (levels - 1);
+    out = q * 2 - 1;
+  );
+
+  // Never hard-clip the band-limited primitive: Gibbs peaks are part of the
+  // band-limited reconstruction and clipping them would generate fresh harmonics.
+  // The complete mip-map path, including combined waves, must not be clipped here:
+  // clipping would immediately recreate harmonics above Nyquist.
+  (aa_wt_enable && wave != 3) ? out : max(-1, min(1, out));
+);
+
+function lfo_bpm_inc(rate)
+local(bps) (
+  // BPM-synced only: rate is cycles per 4/4 bar.
+  // 1 = one bar, 4 = one beat, 8 = eighth, 16 = sixteenth.
+  bps = max(1, tempo) / 60;
+  (bps * max(0.125, rate) * 0.25) * inv_srate;
+);
+
+function lfo_smooth_coef(wave, smooth_amt)
+local(w, smooth_time) (
+  // Cached outside @sample. Smooth is applied to every wave; Smooth Random
+  // keeps a minimum glide so it is not identical to raw Sample Hold.
+  w = floor(wave + 0.5);
+  smooth_amt = max(0, min(1, smooth_amt));
+  w == 6 ? smooth_amt = max(smooth_amt, 0.12);
+  smooth_amt <= 0 ? 1 : (
+    smooth_time = 0.001 + smooth_amt * smooth_amt * 0.249;
+    1 - exp(-1 / max(1, smooth_time * srate));
+  );
+);
+
+function lfo_shape(ph, wave, sh)
+local(w, x) (
+  w = floor(wave + 0.5);
+  w == 0 ? sin(two_pi * ph) :
+  w == 1 ? (4 * abs(ph - 0.5) - 1) :
+  w == 2 ? (ph * 2 - 1) :
+  w == 3 ? (1 - ph * 2) :
+  w == 4 ? (ph < 0.5 ? 1 : -1) :
+  sh;
+);
+
+function lfo_trigger_one(phase*, age*, delay_clock*, active*, start_phase) (
+  phase = start_phase - floor(start_phase);
+  age = 0;
+  delay_clock = 0;
+  active = 1;
+);
+
+function lfo_note_trigger() (
+  // Called only by an allowed note trigger. Op1 Mode Trigger decides whether
+  // legato notes are allowed to restart phase/delay/one-shot.
+  lfo1_delay_clock = 0; lfo2_delay_clock = 0; lfo3_delay_clock = 0;
+  (slider122 >= 0.5 || slider129 >= 1) ? lfo_trigger_one(lfo1_phase, lfo1_age, lfo1_delay_clock, lfo1_active, slider131);
+  (slider145 >= 0.5 || slider152 >= 1) ? lfo_trigger_one(lfo2_phase, lfo2_age, lfo2_delay_clock, lfo2_active, slider154);
+  (slider168 >= 0.5 || slider175 >= 1) ? lfo_trigger_one(lfo3_phase, lfo3_age, lfo3_delay_clock, lfo3_active, slider177);
+  lfo1_active = 1; lfo2_active = 1; lfo3_active = 1;
+);
+
+function lfo_process(phase*, age*, delay_clock*, active*, sh*, seed*, smooth_out*, mode, inc, wave, delay_sec, smooth_coef, one_shot, start_phase, one_shot_len)
+local(raw, fade, w, inc_eff, prev_phase, len) (
+  // CPU pass: inc and smooth_coef are cached outside @sample.
+  // Delay is no longer a waiting timer: it fades modulation depth from 0 to 1.
+  // One Shot Length is a fraction of the cycle: 1=full cycle, 0.5=half, 0.25=quarter.
+  active < 0.5 && one_shot < 1 ? active = 1;
+
+  active >= 0.5 ? (
+    delay_clock += inv_srate;
+
+    w = floor(wave + 0.5);
+    inc_eff = inc; // S&H/Smooth Random use the same BPM phase rate as the other waves.
+
+    prev_phase = phase;
+    phase += inc_eff;
+    phase >= 1 ? phase -= floor(phase);
+
+    // S&H updates twice per normal LFO cycle: at half-cycle and wrap.
+    (w == 5 || w == 6) ? (
+      (phase < prev_phase || (prev_phase < 0.5 && phase >= 0.5)) ? (
+        seed = (seed * 1103515245 + 12345) % 2147483647;
+        sh = (seed / 1073741823.5) - 1;
+      );
+    ) : (
+      phase < prev_phase ? (
+        seed = (seed * 1103515245 + 12345) % 2147483647;
+        sh = (seed / 1073741823.5) - 1;
+      );
+    );
+
+    age += inc;
+    len = max(0, min(1, one_shot_len));
+    one_shot >= 1 && age >= len ? active = 0;
+  );
+
+  active >= 0.5 ? (
+    raw = lfo_shape(phase, wave, sh);
+    fade = delay_sec <= 0 ? 1 : min(1, delay_clock / max(0.000001, delay_sec));
+    raw *= fade;
+  ) : (
+    raw = 0;
+  );
+
+  smooth_coef >= 1 ? (
+    smooth_out = raw;
+  ) : (
+    smooth_out += (raw - smooth_out) * smooth_coef;
+  );
+  smooth_out;
+);
+
+
+function reset_op1() (
+  op1_phase = 0; op1_prevphase = 0; op1_noise_clock = 0;
+  op1_seed = (op1_seed + 33333) % 2147483647;
+  op1_sid_seed = ((op1_sid_seed + 9029) % 8388608); op1_sid_seed <= 0 ? op1_sid_seed = 5930003;
+  op1_noise = next_noise_blend(op1_seed, op1_sid_seed, slider9);
+  slider4 >= 2 ? (op1_env = 0; op1_mod_env = 0;);
+);
+
+function reset_op2() (
+  op2_phase = 0; op2_prevphase = 0; op2_noise_clock = 0;
+  op2_seed = (op2_seed + 44444) % 2147483647;
+  op2_sid_seed = ((op2_sid_seed + 13398) % 8388608); op2_sid_seed <= 0 ? op2_sid_seed = 3592873;
+  op2_noise = next_noise_blend(op2_seed, op2_sid_seed, slider9);
+  slider4 >= 2 ? (op2_env = 0; op2_mod_env = 0;);
+);
+
+function reset_op3() (
+  op3_phase = 0; op3_prevphase = 0; op3_noise_clock = 0;
+  op3_seed = (op3_seed + 55555) % 2147483647;
+  op3_sid_seed = ((op3_sid_seed + 17767) % 8388608); op3_sid_seed <= 0 ? op3_sid_seed = 7281093;
+  op3_noise = next_noise_blend(op3_seed, op3_sid_seed, slider9);
+  slider4 >= 2 ? (op3_env = 0; op3_mod_env = 0;);
+);
+
+
+function note_on_op1(note, vel)
+local(was_down, retrig, arp_on) (
+  was_down = op1_held_count > 0;
+  arp_on = slider76 > 0;
+  drift1_unit = slider13 > 0 ? (rand(2) - 1) : 0;
+  !was_down ? arp_latch_clear(op1_arp_latch_count);
+  held_add(op1_stack, op1_held_count, note);
+  // Keep a full live snapshot for release. Do it on note-on, not on final note-off,
+  // otherwise the release latch collapses to the last released note only.
+  arp_latch_copy(op1_stack, op1_held_count, op1_arp_latch, op1_arp_latch_count, op1_arp_latch_root);
+  // In Chord Allocate the complete chord feeds all three SID Seq memories centrally
+  // in chord_note_on(), so voice allocation must not record only the assigned note.
+  slider76 == 1 && slider3 != 1 ? (
+    !was_down ? sid_seq_clear(op1_sid_seq, note, op1_sid_seq_len)
+              : sid_seq_record(op1_sid_seq, op1_arp_step_idx, note, op1_sid_seq_len);
+  );
+
+  // In ARP mode, note-on must only feed the arp material. It must not move
+  // the oscillator pitch immediately. The pitch is changed only by arp_process()
+  // on a clock step. On the first note of a phrase we initialize the base.
+  (!arp_on || !was_down) ? (
+    op1_arp_release_base = op1_arp_latch_root;
+    op1_target_note = note;
+    op1_cur_note < 0 ? op1_cur_note = note;
+  );
+
+  op1_note = note;
+  op1_gate = vel / 127;
+  retrig = arp_on ? !was_down : ((slider10 < 0.5) || !was_down);
+
+  retrig ? (
+    op1_stage = 1;
+    op1_mod_stage = 1;
+    // LSH-2 style: do not restart the arp clock when adding notes to an already running arp.
+    !was_down ? arp_reset_op1();
+    slider4 > 0 ? reset_op1();
+  );
+);
+
+function note_on_op2(note, vel)
+local(was_down, retrig, arp_on) (
+  was_down = op2_held_count > 0;
+  arp_on = slider77 > 0;
+  drift2_unit = (slider3 == 1 ? slider13 : slider14) > 0 ? (rand(2) - 1) : 0;
+  !was_down ? arp_latch_clear(op2_arp_latch_count);
+  held_add(op2_stack, op2_held_count, note);
+  // Keep a full live snapshot for release. Do it on note-on, not on final note-off,
+  // otherwise the release latch collapses to the last released note only.
+  arp_latch_copy(op2_stack, op2_held_count, op2_arp_latch, op2_arp_latch_count, op2_arp_latch_root);
+  slider77 == 1 && slider3 != 1 ? (
+    !was_down ? sid_seq_clear(op2_sid_seq, note, op2_sid_seq_len)
+              : sid_seq_record(op2_sid_seq, op2_arp_step_idx, note, op2_sid_seq_len);
+  );
+
+  // In ARP mode, note-on must only feed the arp material. It must not move
+  // the oscillator pitch immediately. The pitch is changed only by arp_process()
+  // on a clock step. On the first note of a phrase we initialize the base.
+  (!arp_on || !was_down) ? (
+    op2_arp_release_base = op2_arp_latch_root;
+    op2_target_note = note;
+    op2_cur_note < 0 ? op2_cur_note = note;
+  );
+
+  op2_note = note;
+  op2_gate = vel / 127;
+  retrig = arp_on ? !was_down : (((slider3 == 1 ? slider10 : slider11) < 0.5) || !was_down);
+
+  retrig ? (
+    op2_stage = 1;
+    op2_mod_stage = 1;
+    // LSH-2 style: do not restart the arp clock when adding notes to an already running arp.
+    !was_down ? arp_reset_op2();
+    slider4 > 0 ? reset_op2();
+  );
+);
+
+function note_on_op3(note, vel)
+local(was_down, retrig, arp_on) (
+  was_down = op3_held_count > 0;
+  arp_on = slider78 > 0;
+  drift3_unit = (slider3 == 1 ? slider13 : slider15) > 0 ? (rand(2) - 1) : 0;
+  !was_down ? arp_latch_clear(op3_arp_latch_count);
+  held_add(op3_stack, op3_held_count, note);
+  // Keep a full live snapshot for release. Do it on note-on, not on final note-off,
+  // otherwise the release latch collapses to the last released note only.
+  arp_latch_copy(op3_stack, op3_held_count, op3_arp_latch, op3_arp_latch_count, op3_arp_latch_root);
+  slider78 == 1 && slider3 != 1 ? (
+    !was_down ? sid_seq_clear(op3_sid_seq, note, op3_sid_seq_len)
+              : sid_seq_record(op3_sid_seq, op3_arp_step_idx, note, op3_sid_seq_len);
+  );
+
+  // In ARP mode, note-on must only feed the arp material. It must not move
+  // the oscillator pitch immediately. The pitch is changed only by arp_process()
+  // on a clock step. On the first note of a phrase we initialize the base.
+  (!arp_on || !was_down) ? (
+    op3_arp_release_base = op3_arp_latch_root;
+    op3_target_note = note;
+    op3_cur_note < 0 ? op3_cur_note = note;
+  );
+
+  op3_note = note;
+  op3_gate = vel / 127;
+  retrig = arp_on ? !was_down : (((slider3 == 1 ? slider10 : slider12) < 0.5) || !was_down);
+
+  retrig ? (
+    op3_stage = 1;
+    op3_mod_stage = 1;
+    // LSH-2 style: do not restart the arp clock when adding notes to an already running arp.
+    !was_down ? arp_reset_op3();
+    slider4 > 0 ? reset_op3();
+  );
+);
+
+function note_off_op1(note)
+local(n) (
+  // Do not refresh the release latch here: on the last note-off it would become
+  // a one-note latch and the release would lose the full arp.
+  held_remove(op1_stack, op1_held_count, note);
+  n = held_top(op1_stack, op1_held_count);
+  n >= 0 ? (
+    op1_note = n;
+    // In ARP mode, note-off must not bend/transpose the running arp.
+    !(slider76 > 0 && op1_arp_latch_count > 0) ? op1_target_note = n;
+    op1_gate = 1;
+  ) : (
+    op1_gate = 0;
+    op1_rel_latched = op1_rel_coef;
+    op1_mod_rel_latched = op1_pitch_rel_coef;
+    op1_stage = 4;
+    op1_mod_stage = 4;
+    // Freeze the ARP base/root for release. Do not let note-off order transpose the arpeggio.
+    op1_arp_latch_count > 0 ? op1_arp_release_base = op1_arp_latch_root;
+  );
+);
+function note_off_op2(note)
+local(n) (
+  // Do not refresh the release latch here: on the last note-off it would become
+  // a one-note latch and the release would lose the full arp.
+  held_remove(op2_stack, op2_held_count, note);
+  n = held_top(op2_stack, op2_held_count);
+  n >= 0 ? (
+    op2_note = n;
+    // In ARP mode, note-off must not bend/transpose the running arp.
+    !(slider77 > 0 && op2_arp_latch_count > 0) ? op2_target_note = n;
+    op2_gate = 1;
+  ) : (
+    op2_gate = 0;
+    op2_rel_latched = op2_rel_coef;
+    op2_mod_rel_latched = op2_pitch_rel_coef;
+    op2_stage = 4;
+    op2_mod_stage = 4;
+    // Freeze the ARP base/root for release. Do not let note-off order transpose the arpeggio.
+    op2_arp_latch_count > 0 ? op2_arp_release_base = op2_arp_latch_root;
+  );
+);
+function note_off_op3(note)
+local(n) (
+  // Do not refresh the release latch here: on the last note-off it would become
+  // a one-note latch and the release would lose the full arp.
+  held_remove(op3_stack, op3_held_count, note);
+  n = held_top(op3_stack, op3_held_count);
+  n >= 0 ? (
+    op3_note = n;
+    // In ARP mode, note-off must not bend/transpose the running arp.
+    !(slider78 > 0 && op3_arp_latch_count > 0) ? op3_target_note = n;
+    op3_gate = 1;
+  ) : (
+    op3_gate = 0;
+    op3_rel_latched = op3_rel_coef;
+    op3_mod_rel_latched = op3_pitch_rel_coef;
+    op3_stage = 4;
+    op3_mod_stage = 4;
+    // Freeze the ARP base/root for release. Do not let note-off order transpose the arpeggio.
+    op3_arp_latch_count > 0 ? op3_arp_release_base = op3_arp_latch_root;
+  );
+);
+
+function filter_note_on(note, vel)
+local(was_down, retrig) (
+  was_down = filter_held_count > 0;
+  held_add(filter_stack, filter_held_count, note);
+  filter_key_note = note;
+
+  // LFO Trigger / One Shot follows the same musical rule as Op1 Mode Trigger
+  // and the filter ADSR: Trigger = every note; Legato = first note only.
+  // This keeps one-shot from restarting on legato notes.
+  retrig = (slider10 < 0.5) || !was_down;
+  retrig ? (
+    filter_stage = 1;
+    lfo_note_trigger();
+  );
+);
+
+function filter_note_off(note)
+local(n) (
+  held_remove(filter_stack, filter_held_count, note);
+  n = held_top(filter_stack, filter_held_count);
+  n >= 0 ? filter_key_note = n;
+  filter_held_count <= 0 ? (filter_rel_latched = filter_rel_coef; filter_stage = 4;);
+);
+
+function chord_note_on(note, vel)
+local(chord_was_down) (
+  // Keep a separate complete chord pool for the three independent frequency arps.
+  // Voice allocation remains mono and independent, but every arp can traverse all held notes.
+  chord_was_down = chord_arp_count > 0;
+  held_add(chord_arp_stack, chord_arp_count, note);
+
+  // SID Seq has its own recorded memory, unlike Up/Down/Held modes which read the
+  // live chord pool directly. Feed every incoming chord note to every enabled SID
+  // sequence. Each operator records at its own current clock step, so the three
+  // sequences remain rhythmically independent.
+  slider76 == 1 ? (
+    !chord_was_down ? sid_seq_clear(op1_sid_seq, note, op1_sid_seq_len)
+                    : sid_seq_record(op1_sid_seq, op1_arp_step_idx, note, op1_sid_seq_len);
+  );
+  slider77 == 1 ? (
+    !chord_was_down ? sid_seq_clear(op2_sid_seq, note, op2_sid_seq_len)
+                    : sid_seq_record(op2_sid_seq, op2_arp_step_idx, note, op2_sid_seq_len);
+  );
+  slider78 == 1 ? (
+    !chord_was_down ? sid_seq_clear(op3_sid_seq, note, op3_sid_seq_len)
+                    : sid_seq_record(op3_sid_seq, op3_arp_step_idx, note, op3_sid_seq_len);
+  );
+
+  op1_held_count <= 0 ? note_on_op1(note, vel) :
+  op2_held_count <= 0 ? note_on_op2(note, vel) :
+  op3_held_count <= 0 ? note_on_op3(note, vel) :
+  note_on_op1(note, vel);
+);
+function chord_note_off(note) (
+  held_remove(chord_arp_stack, chord_arp_count, note);
+  note_off_op1(note);
+  note_off_op2(note);
+  note_off_op3(note);
+);
+
+function extreme_pwm(base, ext)
+local(x, a) (
+  x = max(-64, min(64, ext)) / 64;
+  x >= 0 ? (
+    a = x ^ 1.35;
+    base + (1.25 - base) * a;
+  ) : (
+    a = (-x) ^ 1.15;
+    base - (base - 0.0002) * a;
+  );
+);
+
+
+@slider
+inv_srate = 1 / srate;
+master_gain = 10^(slider8/20);
+filter_input_gain = 10^(slider6/20);
+filter_gain = 10^(slider7/20);
+
+// External SID/C64 output RC network. The low-pass softens the final digital
+// edge without darkening the musical band heavily; the high-pass removes the
+// amplifier bias/DC extremely slowly. Cached here, never recomputed per sample.
+out_lp_alpha = 1 - exp(-two_pi * min(16000, srate * 0.45) / srate);
+out_hp_r = exp(-two_pi * 1.6 / srate);
+
+// LFO sleep flags. If all depths for a strip are zero, the whole LFO engine sleeps.
+lfo1_used = (abs(slider132)+abs(slider133)+abs(slider134)+abs(slider135)+abs(slider136)+abs(slider137)+abs(slider138)+abs(slider139)+abs(slider140)+abs(slider141)+abs(slider142)+abs(slider143)+abs(slider144)) > 0.0000001;
+lfo2_used = (abs(slider155)+abs(slider156)+abs(slider157)+abs(slider158)+abs(slider159)+abs(slider160)+abs(slider161)+abs(slider162)+abs(slider163)+abs(slider164)+abs(slider165)+abs(slider166)+abs(slider167)) > 0.0000001;
+lfo3_used = (abs(slider178)+abs(slider179)+abs(slider180)+abs(slider181)+abs(slider182)+abs(slider183)+abs(slider184)+abs(slider185)+abs(slider186)+abs(slider187)+abs(slider188)+abs(slider189)+abs(slider190)) > 0.0000001;
+lfo_any_used = lfo1_used || lfo2_used || lfo3_used;
+lfo_rate_mod_used = (abs(slider61)+abs(slider62)+abs(slider63)) > 0.0000001;
+
+// Smooth coefficients are expensive because they use exp(); cache them here.
+lfo1_smooth_coef = lfo_smooth_coef(slider124, slider128);
+lfo2_smooth_coef = lfo_smooth_coef(slider147, slider151);
+lfo3_smooth_coef = lfo_smooth_coef(slider170, slider174);
+
+chord_master_op1_cached = slider3 == 1;
+model_6581_cached = slider5 >= 1;
+voice3_off_cached = slider103 >= 1;
+
+// CPU fast-path flags and static effective controls.
+audio_multichannel_cached = slider2 >= 0.5;
+midi_mode_cached = floor(slider3 + 0.5);
+// Oversampling is controlled only by the dedicated Off/Auto selector.
+// Keep it completely independent from MIDI Mode so Auto works identically in
+// All Operators Same Note, Chord Allocate and MIDI Channels 1-3.
+// Oversampling is intentionally not cached here. It is sampled directly in @block.
+op1_test_cached = slider100 >= 1;
+op2_test_cached = slider101 >= 1;
+op3_test_cached = slider102 >= 1;
+op2_audio_test_cached = chord_master_op1_cached ? op1_test_cached : op2_test_cached;
+op3_audio_test_cached = chord_master_op1_cached ? op1_test_cached : op3_test_cached;
+
+op1_arp_mode_cached = floor(slider76 + 0.5);
+op2_arp_mode_cached = floor(slider77 + 0.5);
+op3_arp_mode_cached = floor(slider78 + 0.5);
+arp_any_mode_cached = op1_arp_mode_cached > 0 || op2_arp_mode_cached > 0 || op3_arp_mode_cached > 0;
+op3_osc_mod_target_cached = floor(slider104 + 0.5);
+op3_env_mod_target_cached = floor(slider106 + 0.5);
+op3_osc_mod_depth_cached = slider105;
+op3_env_mod_depth_cached = slider107;
+op3_osc_mod_active_cached = op3_osc_mod_target_cached > 0 && abs(op3_osc_mod_depth_cached) > 0.0000001;
+op3_env_mod_active_cached = op3_env_mod_target_cached > 0 && abs(op3_env_mod_depth_cached) > 0.0000001;
+
+sid_amp_bias_cached = model_6581_cached ? 0.012 : 0.003;
+sid_amp_pos_drive_cached = model_6581_cached ? 1.10 : 1.025;
+sid_amp_neg_drive_cached = model_6581_cached ? 0.96 : 0.99;
+sid_amp_wet_cached = model_6581_cached ? 0.085 : 0.022;
+sid_amp_dry_cached = 1 - sid_amp_wet_cached;
+sid_amp_makeup_cached = model_6581_cached ? 1.022 : 1.004;
+
+// Static choices cached outside @sample. These change only when a slider changes.
+op1_ring_cached = slider94 >= 1; op2_ring_cached = slider95 >= 1; op3_ring_cached = slider96 >= 1;
+op1_sync_cached = slider97 >= 1; op2_sync_cached = slider98 >= 1; op3_sync_cached = slider99 >= 1;
+op1_wave_cached = floor(slider22 + 0.5);
+op2_wave_cached = chord_master_op1_cached ? op1_wave_cached : floor(slider23 + 0.5);
+op3_wave_cached = chord_master_op1_cached ? op1_wave_cached : floor(slider24 + 0.5);
+// Combined waves need extra source headroom before polynomial interaction. Cache the
+// multiplier so mip selection does not rediscover it in every oscillator call.
+op1_aa_inc_mul_cached = op1_wave_cached == 7 ? 4 : (op1_wave_cached >= 4 ? 2 : 1);
+op2_aa_inc_mul_cached = op2_wave_cached == 7 ? 4 : (op2_wave_cached >= 4 ? 2 : 1);
+op3_aa_inc_mul_cached = op3_wave_cached == 7 ? 4 : (op3_wave_cached >= 4 ? 2 : 1);
+op1_level_cached = slider16;
+op2_level_cached = chord_master_op1_cached ? slider16 : slider17;
+op3_level_cached = chord_master_op1_cached ? slider16 : slider18;
+op2_fine_cached = chord_master_op1_cached ? slider28 : slider29;
+op3_fine_cached = chord_master_op1_cached ? slider28 : slider30;
+op2_bend_range_cached = chord_master_op1_cached ? slider91 : slider92;
+op3_bend_range_cached = chord_master_op1_cached ? slider91 : slider93;
+op2_pitch_mod_depth_cached = chord_master_op1_cached ? slider52 : slider53;
+op3_pitch_mod_depth_cached = chord_master_op1_cached ? slider52 : slider54;
+op2_pwm_mod_depth_cached = chord_master_op1_cached ? slider55 : slider56;
+op3_pwm_mod_depth_cached = chord_master_op1_cached ? slider55 : slider57;
+op2_to_filter_cached = chord_master_op1_cached ? slider114 : slider115;
+op3_to_filter_cached = chord_master_op1_cached ? slider114 : slider116;
+
+
+// Modular stereo routing. A voice remains mono while Fixed Pan, Mod Env Pan and
+// all three LFO Pan depths that can control it are exactly zero. The expensive
+// second filter path is enabled only when a filtered operator can actually pan.
+pan_eps = 0.0000001;
+op1_pan_stereo_cached = (abs(slider19) + abs(slider49) + abs(slider142) + abs(slider165) + abs(slider188)) > pan_eps;
+op2_lfo_pan_depth_cached = chord_master_op1_cached ? (abs(slider142) + abs(slider165) + abs(slider188)) : (abs(slider143) + abs(slider166) + abs(slider189));
+op3_lfo_pan_depth_cached = chord_master_op1_cached ? (abs(slider142) + abs(slider165) + abs(slider188)) : (abs(slider144) + abs(slider167) + abs(slider190));
+op2_pan_stereo_cached = (abs(slider20) + abs(slider50) + op2_lfo_pan_depth_cached) > pan_eps;
+op3_pan_stereo_cached = (abs(slider21) + abs(slider51) + op3_lfo_pan_depth_cached) > pan_eps;
+filter_stereo_needed_cached =
+  ((slider114 >= 1) && op1_pan_stereo_cached) ||
+  ((op2_to_filter_cached >= 1) && op2_pan_stereo_cached) ||
+  ((op3_to_filter_cached >= 1) && op3_pan_stereo_cached);
+// The complete mix is mono only when every possible pan source is centered. A stereo
+// excursion disables the mono output fast path until the next cold reset, preserving
+// analogue output-state continuity if Pan is moved while a note is sounding.
+mix_stereo_needed_cached = op1_pan_stereo_cached || op2_pan_stereo_cached || op3_pan_stereo_cached;
+mix_stereo_needed_cached ? mono_output_fast_safe = 0;
+(!mix_stereo_needed_cached && idle_block) ? mono_output_fast_safe = 1;
+
+// Distinguish a fixed pan position from a moving pan source.
+op1_lfo_pan_used_cached = (abs(slider142) + abs(slider165) + abs(slider188)) > pan_eps;
+op2_lfo_pan_used_cached = op2_lfo_pan_depth_cached > pan_eps;
+op3_lfo_pan_used_cached = op3_lfo_pan_depth_cached > pan_eps;
+op1_pan_dynamic_cached = abs(slider49) > pan_eps || op1_lfo_pan_used_cached;
+op2_pan_dynamic_cached = abs(slider50) > pan_eps || op2_lfo_pan_used_cached;
+op3_pan_dynamic_cached = abs(slider51) > pan_eps || op3_lfo_pan_used_cached;
+op1_pan_l_static = 1 - max(0, max(-1, min(1, slider19)));
+op1_pan_r_static = 1 + min(0, max(-1, min(1, slider19)));
+op2_pan_l_static = 1 - max(0, max(-1, min(1, slider20)));
+op2_pan_r_static = 1 + min(0, max(-1, min(1, slider20)));
+op3_pan_l_static = 1 - max(0, max(-1, min(1, slider21)));
+op3_pan_r_static = 1 + min(0, max(-1, min(1, slider21)));
+
+// Destination-specific LFO flags avoid neutral VCA/PWM/pitch work.
+op1_lfo_pitch_used_cached = (abs(slider133) + abs(slider156) + abs(slider179)) > pan_eps;
+op2_lfo_pitch_used_cached = chord_master_op1_cached ? op1_lfo_pitch_used_cached : ((abs(slider134) + abs(slider157) + abs(slider180)) > pan_eps);
+op3_lfo_pitch_used_cached = chord_master_op1_cached ? op1_lfo_pitch_used_cached : ((abs(slider135) + abs(slider158) + abs(slider181)) > pan_eps);
+op1_lfo_pwm_used_cached = (abs(slider136) + abs(slider159) + abs(slider182)) > pan_eps;
+op2_lfo_pwm_used_cached = chord_master_op1_cached ? op1_lfo_pwm_used_cached : ((abs(slider137) + abs(slider160) + abs(slider183)) > pan_eps);
+op3_lfo_pwm_used_cached = chord_master_op1_cached ? op1_lfo_pwm_used_cached : ((abs(slider138) + abs(slider161) + abs(slider184)) > pan_eps);
+op1_lfo_level_used_cached = (abs(slider139) + abs(slider162) + abs(slider185)) > pan_eps;
+op2_lfo_level_used_cached = chord_master_op1_cached ? op1_lfo_level_used_cached : ((abs(slider140) + abs(slider163) + abs(slider186)) > pan_eps);
+op3_lfo_level_used_cached = chord_master_op1_cached ? op1_lfo_level_used_cached : ((abs(slider141) + abs(slider164) + abs(slider187)) > pan_eps);
+lfo_cut_used_cached = (abs(slider132) + abs(slider155) + abs(slider178)) > pan_eps;
+
+// Filter switches and resonance mix denominators are static between slider changes.
+filter_lp_on_cached = slider110 >= 1;
+filter_bp_on_cached = slider111 >= 1;
+filter_hp_on_cached = slider112 >= 1;
+filter_mode_count_cached = filter_lp_on_cached + filter_bp_on_cached + filter_hp_on_cached;
+filter_mode_inv_cached = filter_mode_count_cached > 0 ? 1 / filter_mode_count_cached : 0;
+filter_res_mix_6581_cached = (slider110 + slider111 * 0.70 + slider112 * 0.36) * filter_mode_inv_cached;
+filter_res_mix_8580_cached = (slider110 + slider111 * 0.72 + slider112 * 0.38) * filter_mode_inv_cached;
+filter_all_modes_cached = filter_lp_on_cached && filter_bp_on_cached && filter_hp_on_cached;
+filter_sustain_cached = slider120;
+norm_total_cached = 0.0001 + (chord_master_op1_cached ? 3 : 1);
+
+// Cutoff is intentionally virtual-bipolar now.
+// Negative values are below the real SID register floor: the audio cutoff is still clamped at 0,
+// but negative offset lets a positive filter envelope start from silence and open later.
+cut_norm = max(0, slider108) / 2047;
+res_norm = slider109 / 15;
+
+op1_porta_coef = slider46 <= 0 ? 1 : (1 - exp(-1 / max(1, slider46 * srate)));
+op2_porta_time = chord_master_op1_cached ? slider46 : slider47;
+op3_porta_time = chord_master_op1_cached ? slider46 : slider48;
+op2_porta_coef = op2_porta_time <= 0 ? 1 : (1 - exp(-1 / max(1, op2_porta_time * srate)));
+op3_porta_coef = op3_porta_time <= 0 ? 1 : (1 - exp(-1 / max(1, op3_porta_time * srate)));
+
+// Per-sample pitch is required only for sources that actually move within a block.
+op1_internal_pitch_dynamic_cached = ((slider104 == 2) && abs(slider105) > pan_eps) || ((slider106 == 2) && abs(slider107) > pan_eps);
+op2_internal_pitch_dynamic_cached = ((slider104 == 3) && abs(slider105) > pan_eps) || ((slider106 == 3) && abs(slider107) > pan_eps);
+op1_pitch_dynamic_cached = op1_porta_coef < 1 || op1_arp_mode_cached > 0 || abs(op1_arp_pitch_cur) >= 0.00001 || abs(slider52) > pan_eps || op1_lfo_pitch_used_cached || op1_internal_pitch_dynamic_cached;
+op2_pitch_dynamic_cached = op2_porta_coef < 1 || op2_arp_mode_cached > 0 || abs(op2_arp_pitch_cur) >= 0.00001 || abs(op2_pitch_mod_depth_cached) > pan_eps || op2_lfo_pitch_used_cached || op2_internal_pitch_dynamic_cached;
+op3_pitch_dynamic_cached = op3_porta_coef < 1 || op3_arp_mode_cached > 0 || abs(op3_arp_pitch_cur) >= 0.00001 || abs(op3_pitch_mod_depth_cached) > pan_eps || op3_lfo_pitch_used_cached;
+
+op1_internal_pwm_dynamic_cached = ((slider104 == 4) && abs(slider105) > pan_eps) || ((slider106 == 4) && abs(slider107) > pan_eps);
+op2_internal_pwm_dynamic_cached = ((slider104 == 5) && abs(slider105) > pan_eps) || ((slider106 == 5) && abs(slider107) > pan_eps);
+op1_pwm_dynamic_cached = op1_lfo_pwm_used_cached || abs(slider55) > pan_eps || op1_internal_pwm_dynamic_cached;
+op2_pwm_dynamic_cached = op2_lfo_pwm_used_cached || abs(op2_pwm_mod_depth_cached) > pan_eps || op2_internal_pwm_dynamic_cached;
+op3_pwm_dynamic_cached = op3_lfo_pwm_used_cached || abs(op3_pwm_mod_depth_cached) > pan_eps;
+
+// Per-operator Mod Env coefficients. Envelope is normalized 0..1 and can drive pitch, PWM and an LFO rate.
+op1_mod_sus = slider70; op2_mod_sus = chord_master_op1_cached ? slider70 : slider71; op3_mod_sus = chord_master_op1_cached ? slider70 : slider72;
+op1_mod_att_step = 1 / max(1, slider64 * srate);
+op2_mod_att_step = 1 / max(1, (chord_master_op1_cached ? slider64 : slider65) * srate);
+op3_mod_att_step = 1 / max(1, (chord_master_op1_cached ? slider64 : slider66) * srate);
+op1_mod_dec_step = (1 - op1_mod_sus) / max(1, slider67 * srate);
+op2_mod_dec_step = (1 - op2_mod_sus) / max(1, (chord_master_op1_cached ? slider67 : slider68) * srate);
+op3_mod_dec_step = (1 - op3_mod_sus) / max(1, (chord_master_op1_cached ? slider67 : slider69) * srate);
+op1_pitch_rel_coef = 1 / max(1, slider73 * srate);
+op2_pitch_rel_coef = 1 / max(1, (chord_master_op1_cached ? slider73 : slider74) * srate);
+op3_pitch_rel_coef = 1 / max(1, (chord_master_op1_cached ? slider73 : slider75) * srate);
+
+// ARP glide depth: 0 = square SID-player step, 1 = maximum rounded ARP corners.
+// LSH-2 style: this is an independent smoothing coefficient for arp frequency jumps,
+// not a multiplier of the normal operator portamento. So it works even when Op Portamento = 0.
+op1_arp_glide_sq = max(0, slider88) * max(0, slider88);
+op2_arp_glide_src = slider89;
+op2_arp_glide_sq = max(0, op2_arp_glide_src) * max(0, op2_arp_glide_src);
+op3_arp_glide_src = slider90;
+op3_arp_glide_sq = max(0, op3_arp_glide_src) * max(0, op3_arp_glide_src);
+op1_arp_glide_coef = op1_arp_glide_sq > 0 ? (1 / (1 + op1_arp_glide_sq * 2000)) : 1;
+op2_arp_glide_coef = op2_arp_glide_sq > 0 ? (1 / (1 + op2_arp_glide_sq * 2000)) : 1;
+op3_arp_glide_coef = op3_arp_glide_sq > 0 ? (1 / (1 + op3_arp_glide_sq * 2000)) : 1;
+
+
+// Cached ADSR steps/coefs. These only depend on sliders and sample rate.
+op1_sus_eff = slider40;
+op2_sus_eff = chord_master_op1_cached ? slider40 : slider41;
+op3_sus_eff = chord_master_op1_cached ? slider40 : slider42;
+op1_att_step = 1 / max(1, slider34 * srate);
+op2_att_step = 1 / max(1, (chord_master_op1_cached ? slider34 : slider35) * srate);
+op3_att_step = 1 / max(1, (chord_master_op1_cached ? slider34 : slider36) * srate);
+op1_dec_step = (1 - op1_sus_eff) / max(1, slider37 * srate);
+op2_dec_step = (1 - op2_sus_eff) / max(1, (chord_master_op1_cached ? slider37 : slider38) * srate);
+op3_dec_step = (1 - op3_sus_eff) / max(1, (chord_master_op1_cached ? slider37 : slider39) * srate);
+op1_rel_coef = 1 / max(1, slider43 * srate);
+op2_rel_coef = 1 / max(1, (chord_master_op1_cached ? slider43 : slider44) * srate);
+op3_rel_coef = 1 / max(1, (chord_master_op1_cached ? slider43 : slider45) * srate);
+filter_att_step = 1 / max(1, slider118 * srate);
+filter_dec_step = (1 - slider120) / max(1, slider119 * srate);
+filter_rel_coef = 1 / max(1, slider121 * srate);
+op1_rel_latched = op1_rel_coef; op2_rel_latched = op2_rel_coef; op3_rel_latched = op3_rel_coef;
+op1_mod_rel_latched = op1_pitch_rel_coef; op2_mod_rel_latched = op2_pitch_rel_coef; op3_mod_rel_latched = op3_pitch_rel_coef;
+filter_rel_latched = filter_rel_coef;
+
+// PWM Extended is the only visible pulse-width control now.
+// It is still centered around a neutral 50% square at 0.
+// Positive can go beyond the useful audible duty range up to a flat high state.
+// Negative goes almost to a vanishing needle pulse, but stops just before full silence.
+op1_pw_base = extreme_pwm(0.5, slider31);
+op2_pw_base = extreme_pwm(0.5, chord_master_op1_cached ? slider31 : slider32);
+op3_pw_base = extreme_pwm(0.5, chord_master_op1_cached ? slider31 : slider33);
+
+// Two deliberately different register-to-cutoff curves.
+// The cutoff frequency itself is recalculated at audio rate because
+// the filter now has its own ADSR envelope.
+!model_6581_cached ? (
+  // 8580 R5: stronger three-stage resonance. v1.86 doubles the effective
+  // resonance slope while retaining a safety floor below self-oscillation.
+  filter_damp = 1.16 - res_norm * 0.90;
+  filter_lp_weight = 1.00;
+  filter_bp_weight = 0.94;
+  filter_hp_weight = 0.99;
+) : (
+  // 6581 R4: keep the actual feedback core below self-oscillation.
+  // Resonant character is added later as a controlled output presence, not by
+  // letting the SVF feedback loop run unstable.
+  filter_damp = 1.30 - res_norm * 0.36;
+  filter_lp_weight = 1.00;
+  filter_bp_weight = 1.00;
+  filter_hp_weight = 0.98;
+);
+
+filter_damp = max(model_6581_cached ? 1.06 : 0.62, min(1.55, filter_damp));
+filter_state_loss = model_6581_cached ? (0.99780 - res_norm * 0.00055) : 0.99980;
+
+// Cached output/model gain constants. These used to be recalculated per sample.
+clean_makeup_6581 = model_6581_cached ? 1.122018454 : 1.00; // +1 dB
+filter_makeup_6581 = model_6581_cached ? ((3.45 + res_norm * 0.16) * 1.995262315) : 1.00;
+out_drive = 1 + (model_6581_cached ? 0.006 : 0);
+composite_makeup_gain = 1.00;
+sid_6581_global_gain = 1.00; // v1.82: removed previous +3 dB global lift for 6581
+
+r4_body_f = 2 * sin($pi * 135 / srate);
+r4_body_f = min(0.20, max(0.0001, r4_body_f));
+
+
+// v2.09: static resonance/output coefficients used by both stereo filter paths.
+filter_state_bp_mul = model_6581_cached ? (0.9992 - res_norm * 0.00035) : 1;
+filter_state_hp_mul = model_6581_cached ? (0.9994 - res_norm * 0.00025) : 1;
+filter_state_lp_mul = model_6581_cached ? (0.9995 - res_norm * 0.00020) : 1;
+filter_cream_gain = 1 + res_norm * 0.36;
+filter_res_presence_6581_coef = res_norm * (1.04 + res_norm * 1.56) * filter_res_mix_6581_cached;
+filter_lp_res_presence_coef = res_norm * (0.36 + res_norm * 0.64) * filter_mode_inv_cached;
+filter_post_col = 1.06 + 0.020 * res_norm;
+filter_post_col_inv = 1 / filter_post_col;
+filter_post_mix = 0.23 + 0.10 * res_norm;
+filter_post_clean_mix = 1 - filter_post_mix;
+filter_res_presence_8580_coef = res_norm * (0.24 + res_norm * 0.32) * filter_res_mix_8580_cached;
+
+// v2.15: LFO half-wave squash gains. 0 = original half, 1 = flattened to zero.
+lfo1_upper_gain = 1 - slider125;
+lfo1_lower_gain = 1 - slider126;
+lfo2_upper_gain = 1 - slider148;
+lfo2_lower_gain = 1 - slider149;
+lfo3_upper_gain = 1 - slider171;
+lfo3_lower_gain = 1 - slider172;
+
+// A static cutoff does not need pow() and sin() at audio rate. The filter ADSR
+// still runs normally; it simply has no audible cutoff destination when Amount=0.
+filter_cut_dynamic_cached =
+  abs(slider117) > pan_eps || abs(slider113) > pan_eps || lfo_cut_used_cached ||
+  (((slider104 == 1) && abs(slider105) > pan_eps) || ((slider106 == 1) && abs(slider107) > pan_eps));
+!filter_cut_dynamic_cached ? (
+  static_cut_reg_cached = max(0, min(2047, slider108));
+  static_cut_norm_cached = static_cut_reg_cached / 2047;
+  !model_6581_cached ? (
+    static_filter_fc_cached = 4 + pow(static_cut_norm_cached, 1.38) * 12500;
+  ) : (
+    static_filter_fc_cached = 28 + pow(static_cut_norm_cached, 2.12) * 8170;
+  );
+  static_filter_fc_cached = min(static_filter_fc_cached, srate * 0.42);
+  static_filter_f_cached = 2 * sin($pi * static_filter_fc_cached / srate);
+  static_filter_f_cached = min(0.98, max(0.00015, static_filter_f_cached));
+  static_r4_body_amt_cached = model_6581_cached ? (0.22 * pow(1 - static_cut_norm_cached, 2.35)) : 0;
+);
+
+@block
+// v2.21: deep idle block sleep.
+// MIDI is always consumed/passed through first. After that we decide immediately whether
+// the synth is silent. Expensive block-rate pitch/ARP/drift work is skipped completely
+// while idle instead of being calculated before the old idle test.
+while (midirecv(offset, msg1, msg23)) (
+  status = msg1 & 240;
+  chan = msg1 & 15;
+  note = msg23 & 127;
+  vel = (msg23 >> 8) & 127;
+
+  (status == 224) ? (
+    bend_lsb = msg23 & 127;
+    bend_msb = (msg23 >> 8) & 127;
+    bend_norm = (bend_lsb + bend_msb * 128 - 8192) / 8192;
+    bend_norm = max(-1, min(1, bend_norm));
+
+    // Mode 0 keeps the classic shared pitch bend on MIDI channel 1.
+    // Modes 1/2 allow independent bends on MIDI channels 1, 2 and 3.
+    ((slider3 == 0 || slider3 == 1) && chan == 0) ? (
+      op1_bend = bend_norm; op2_bend = bend_norm; op3_bend = bend_norm;
+    ) : (
+      chan == 0 ? op1_bend = bend_norm;
+      chan == 1 ? op2_bend = bend_norm;
+      chan == 2 ? op3_bend = bend_norm;
+    );
+  ) :
+  (status == 144 && vel > 0) ? (
+    filter_note_on(note, vel);
+    slider3 == 0 ? (
+      note_on_op1(note, vel);
+      note_on_op2(note, vel);
+      note_on_op3(note, vel);
+    ) :
+    slider3 == 1 ? (
+      chord_note_on(note, vel);
+    ) :
+    (
+      chan == 0 ? note_on_op1(note, vel);
+      chan == 1 ? note_on_op2(note, vel);
+      chan == 2 ? note_on_op3(note, vel);
+    );
+  ) :
+  ((status == 128) || (status == 144 && vel == 0)) ? (
+    filter_note_off(note);
+    slider3 == 0 ? (
+      note_off_op1(note);
+      note_off_op2(note);
+      note_off_op3(note);
+    ) :
+    slider3 == 1 ? (
+      chord_note_off(note);
+    ) :
+    (
+      chan == 0 ? note_off_op1(note);
+      chan == 1 ? note_off_op2(note);
+      chan == 2 ? note_off_op3(note);
+    );
+  );
+
+  midisend(offset, msg1, msg23);
+);
+
+// v2.25 TEST Cold Reset Idle:
+// Do not trust note/stage bookkeeping as the sleep criterion. The authoritative
+// condition is: no MIDI key is physically held and every audible VCA has reached
+// the exact silence threshold. At that point no oscillator/filter/control state can
+// produce audible output, so collapse the runtime state back to the cold @init state.
+// This reset happens only once on the transition into sleep (idle_block_latched=0).
+cold_sleep_ready =
+  filter_held_count <= 0 &&
+  op1_gate < 0.5 && op2_gate < 0.5 && op3_gate < 0.5 &&
+  op1_env <= 0.0001 && op2_env <= 0.0001 && op3_env <= 0.0001;
+
+cold_sleep_ready && !idle_block_latched ? (
+  // Output/filter states are zeroed below, so a centered patch can safely share its
+  // left/right final analogue stage again on the next note.
+  mono_output_fast_safe = !mix_stereo_needed_cached;
+
+  // Audible envelopes / note ownership.
+  op1_env = 0; op2_env = 0; op3_env = 0;
+  op1_stage = 0; op2_stage = 0; op3_stage = 0;
+  op1_note = -1; op2_note = -1; op3_note = -1;
+  op1_target_note = -1; op2_target_note = -1; op3_target_note = -1;
+  op1_cur_note = -1; op2_cur_note = -1; op3_cur_note = -1;
+  op1_gate = 0; op2_gate = 0; op3_gate = 0;
+
+  // Inaudible modulation/filter envelopes must not keep the engine logically alive.
+  op1_mod_env = 0; op2_mod_env = 0; op3_mod_env = 0;
+  op1_mod_stage = 0; op2_mod_stage = 0; op3_mod_stage = 0;
+  filter_env = 0; filter_stage = 0;
+
+  // Drop every release/ARP ownership token so the next note starts exactly like a
+  // freshly loaded instance. Free-running LFO phase is intentionally preserved below.
+  op1_held_count = 0; op2_held_count = 0; op3_held_count = 0;
+  chord_arp_count = 0; filter_held_count = 0;
+  op1_arp_latch_count = 0; op2_arp_latch_count = 0; op3_arp_latch_count = 0;
+  op1_sid_seq_len = 0; op2_sid_seq_len = 0; op3_sid_seq_len = 0;
+  arp_reset_op1(); arp_reset_op2(); arp_reset_op3();
+);
+
+// Once cold_sleep_ready is true, @sample has no active branch at all.
+idle_block = cold_sleep_ready;
+
+idle_block ? (
+  // Preserve only FREE LFO clocks at block rate. Triggered/one-shot strips do no work.
+  lfo1_used && slider122 < 0.5 && slider129 < 1 ? (
+    lfo1_base_inc = lfo_bpm_inc(slider123);
+    lfo1_phase += lfo1_base_inc * samplesblock;
+    lfo1_phase -= floor(lfo1_phase);
+  );
+  lfo2_used && slider145 < 0.5 && slider152 < 1 ? (
+    lfo2_base_inc = lfo_bpm_inc(slider146);
+    lfo2_phase += lfo2_base_inc * samplesblock;
+    lfo2_phase -= floor(lfo2_phase);
+  );
+  lfo3_used && slider168 < 0.5 && slider175 < 1 ? (
+    lfo3_base_inc = lfo_bpm_inc(slider169);
+    lfo3_phase += lfo3_base_inc * samplesblock;
+    lfo3_phase -= floor(lfo3_phase);
+  );
+
+  // Clear residual DSP memory only once when entering idle.
+  !idle_block_latched ? (
+    filter_lp = filter_bp = filter_hp = filter_r4_body_lp = 0;
+    filter_lp_l = filter_bp_l = filter_hp_l = filter_r4_body_lp_l = 0;
+    filter_lp_r = filter_bp_r = filter_hp_r = filter_r4_body_lp_r = 0;
+
+    out_lp_mix_l = out_hp_x_mix_l = out_hp_y_mix_l = 0;
+    out_lp_mix_r = out_hp_x_mix_r = out_hp_y_mix_r = 0;
+    out_lp_op1_l = out_hp_x_op1_l = out_hp_y_op1_l = 0;
+    out_lp_op1_r = out_hp_x_op1_r = out_hp_y_op1_r = 0;
+    out_lp_op2_l = out_hp_x_op2_l = out_hp_y_op2_l = 0;
+    out_lp_op2_r = out_hp_x_op2_r = out_hp_y_op2_r = 0;
+    out_lp_op3_l = out_hp_x_op3_l = out_hp_y_op3_l = 0;
+    out_lp_op3_r = out_hp_x_op3_r = out_hp_y_op3_r = 0;
+    out_lp_filter_l = out_hp_x_filter_l = out_hp_y_filter_l = 0;
+    out_lp_filter_r = out_hp_x_filter_r = out_hp_y_filter_r = 0;
+
+    idle_block_latched = 1;
+  );
+) : (
+  idle_block_latched = 0;
+
+  // Tempo can change while transport runs. Active LFO increments are block-rate work.
+  lfo1_base_inc = lfo1_used ? lfo_bpm_inc(slider123) : 0;
+  lfo2_base_inc = lfo2_used ? lfo_bpm_inc(slider146) : 0;
+  lfo3_base_inc = lfo3_used ? lfo_bpm_inc(slider169) : 0;
+
+  // ARP clock conversion and static note frequencies are active-block work only.
+  arp_any_mode_cached ? (
+    arp_bpm_cached = max(1, tempo);
+    arp_samples_per_beat_cached = srate * 60 / arp_bpm_cached;
+    spb4_inv = 1 / (arp_samples_per_beat_cached * 4);
+  ) : (
+    spb4_inv = 0;
+  );
+
+  op1_porta_coef >= 1 && op1_note >= 0 ? op1_cur_note = op1_target_note;
+  op2_porta_coef >= 1 && op2_note >= 0 ? op2_cur_note = op2_target_note;
+  op3_porta_coef >= 1 && op3_note >= 0 ? op3_cur_note = op3_target_note;
+
+  drift1_cents_cached = drift1_unit * slider13 * 50;
+  drift2_amount_cached = chord_master_op1_cached ? slider13 : slider14;
+  drift3_amount_cached = chord_master_op1_cached ? slider13 : slider15;
+  drift2_cents_cached = drift2_unit * drift2_amount_cached * 50;
+  drift3_cents_cached = drift3_unit * drift3_amount_cached * 50;
+
+  (!op1_pitch_dynamic_cached && op1_note >= 0) ? (
+    op1_static_freq_cached = note_hz(op1_cur_note + slider25 + slider28/100 + drift1_cents_cached/100 + op1_bend * slider91);
+    op1_static_inc_cached = op1_static_freq_cached * inv_srate;
+    op1_static_aa_lev_cached = op1_wave_cached == 3 ? 0 : aa_mip_level(max(0.0000001, op1_static_inc_cached * op1_aa_inc_mul_cached));
+  );
+  (!op2_pitch_dynamic_cached && op2_note >= 0) ? (
+    op2_static_freq_cached = note_hz(op2_cur_note + slider26 + op2_fine_cached/100 + drift2_cents_cached/100 + op2_bend * op2_bend_range_cached);
+    op2_static_inc_cached = op2_static_freq_cached * inv_srate;
+    op2_static_aa_lev_cached = op2_wave_cached == 3 ? 0 : aa_mip_level(max(0.0000001, op2_static_inc_cached * op2_aa_inc_mul_cached));
+  );
+  (!op3_pitch_dynamic_cached && op3_note >= 0) ? (
+    op3_static_freq_cached = note_hz(op3_cur_note + slider27 + op3_fine_cached/100 + drift3_cents_cached/100 + op3_bend * op3_bend_range_cached);
+    op3_static_inc_cached = op3_static_freq_cached * inv_srate;
+    op3_static_aa_lev_cached = op3_wave_cached == 3 ? 0 : aa_mip_level(max(0.0000001, op3_static_inc_cached * op3_aa_inc_mul_cached));
+  );
+);
+
+@sample
+// v2.24 TEST Zero-Work Idle:
+// With in_pin:none there is no audio input to clear or pass through.
+// When the synth is asleep execute no per-sample output writes at all; only the
+// active branch exists at run time. This mirrors the near-zero state seen before
+// the first Note On as closely as JSFX permits.
+!idle_block ? (
+// -------------------- SID OSCILLATOR CORE --------------------
+// Real SID topology used here:
+//   Ring: Op1 is affected by Op3, Op2 by Op1, Op3 by Op2.
+//   Sync: Op1 is reset by Op3, Op2 by Op1, Op3 by Op2.
+// Sync is a hard accumulator reset on the RISING MSB edge of the modulator,
+// not on normal phase wrap. Ring uses the modulator accumulator MSB and affects
+// only the triangle component of the affected oscillator.
+
+chord_master_op1 = chord_master_op1_cached;
+
+op1_active = op1_note >= 0;
+op2_active = op2_note >= 0;
+op3_active = op3_note >= 0;
+
+// Audio activity and oscillator activity are separate.
+// In a real SID, Gate/envelope level does not stop the accumulator.
+// If an operator is being used as a ring/sync source for another operator that is
+// still releasing, its phase must continue running, even if its own VCA has faded out.
+// Three BPM-synced LFO strips. CPU rule: a strip sleeps completely until at least
+// one of its destination depths is non-zero. Mod Env rate control is also bypassed
+// when its bipolar depth is exactly zero. Each full-scale envelope/depth spans
+// four octaves of rate: +1 = 16x faster, -1 = 16x slower.
+lfo_any_used ? (
+  lfo_rate_mod_used ? (
+    lfo1_rate_oct = 0; lfo2_rate_oct = 0; lfo3_rate_oct = 0;
+    abs(slider61) > 0.0000001 ? (
+      slider58 == 1 ? lfo1_rate_oct += op1_mod_env * slider61 * 4;
+      slider58 == 2 ? lfo2_rate_oct += op1_mod_env * slider61 * 4;
+      slider58 == 3 ? lfo3_rate_oct += op1_mod_env * slider61 * 4;
+    );
+    op2_rate_depth_eff = chord_master_op1 ? slider61 : slider62;
+    op2_rate_target_eff = chord_master_op1 ? slider58 : slider59;
+    abs(op2_rate_depth_eff) > 0.0000001 ? (
+      op2_rate_target_eff == 1 ? lfo1_rate_oct += op2_mod_env * op2_rate_depth_eff * 4;
+      op2_rate_target_eff == 2 ? lfo2_rate_oct += op2_mod_env * op2_rate_depth_eff * 4;
+      op2_rate_target_eff == 3 ? lfo3_rate_oct += op2_mod_env * op2_rate_depth_eff * 4;
+    );
+    op3_rate_depth_eff = chord_master_op1 ? slider61 : slider63;
+    op3_rate_target_eff = chord_master_op1 ? slider58 : slider60;
+    abs(op3_rate_depth_eff) > 0.0000001 ? (
+      op3_rate_target_eff == 1 ? lfo1_rate_oct += op3_mod_env * op3_rate_depth_eff * 4;
+      op3_rate_target_eff == 2 ? lfo2_rate_oct += op3_mod_env * op3_rate_depth_eff * 4;
+      op3_rate_target_eff == 3 ? lfo3_rate_oct += op3_mod_env * op3_rate_depth_eff * 4;
+    );
+
+    lfo1_inc = lfo1_base_inc * 2^(max(-8, min(8, lfo1_rate_oct)));
+    lfo2_inc = lfo2_base_inc * 2^(max(-8, min(8, lfo2_rate_oct)));
+    lfo3_inc = lfo3_base_inc * 2^(max(-8, min(8, lfo3_rate_oct)));
+  ) : (
+    lfo1_inc = lfo1_base_inc;
+    lfo2_inc = lfo2_base_inc;
+    lfo3_inc = lfo3_base_inc;
+  );
+  lfo1_out = lfo1_used ? lfo_process(lfo1_phase, lfo1_age, lfo1_delay_clock, lfo1_active, lfo1_sh, lfo1_seed, lfo1_smooth_out, slider122, lfo1_inc, slider124, slider127, lfo1_smooth_coef, slider129, slider131, slider130) : 0;
+  lfo2_out = lfo2_used ? lfo_process(lfo2_phase, lfo2_age, lfo2_delay_clock, lfo2_active, lfo2_sh, lfo2_seed, lfo2_smooth_out, slider145, lfo2_inc, slider147, slider150, lfo2_smooth_coef, slider152, slider154, slider153) : 0;
+  lfo3_out = lfo3_used ? lfo_process(lfo3_phase, lfo3_age, lfo3_delay_clock, lfo3_active, lfo3_sh, lfo3_seed, lfo3_smooth_out, slider168, lfo3_inc, slider170, slider173, lfo3_smooth_coef, slider175, slider177, slider176) : 0;
+
+  lfo1_out >= 0 ? lfo1_out *= lfo1_upper_gain : lfo1_out *= lfo1_lower_gain;
+  lfo2_out >= 0 ? lfo2_out *= lfo2_upper_gain : lfo2_out *= lfo2_lower_gain;
+  lfo3_out >= 0 ? lfo3_out *= lfo3_upper_gain : lfo3_out *= lfo3_lower_gain;
+
+  lfo_cut_mod = lfo1_out * slider132 + lfo2_out * slider155 + lfo3_out * slider178;
+  lfo_op1_pitch_mod = lfo1_out * slider133 + lfo2_out * slider156 + lfo3_out * slider179;
+  lfo_op2_pitch_mod = chord_master_op1 ? (lfo1_out * slider133 + lfo2_out * slider156 + lfo3_out * slider179) : (lfo1_out * slider134 + lfo2_out * slider157 + lfo3_out * slider180);
+  lfo_op3_pitch_mod = chord_master_op1 ? (lfo1_out * slider133 + lfo2_out * slider156 + lfo3_out * slider179) : (lfo1_out * slider135 + lfo2_out * slider158 + lfo3_out * slider181);
+  lfo_op1_pwm_mod = lfo1_out * slider136 + lfo2_out * slider159 + lfo3_out * slider182;
+  lfo_op2_pwm_mod = chord_master_op1 ? (lfo1_out * slider136 + lfo2_out * slider159 + lfo3_out * slider182) : (lfo1_out * slider137 + lfo2_out * slider160 + lfo3_out * slider183);
+  lfo_op3_pwm_mod = chord_master_op1 ? (lfo1_out * slider136 + lfo2_out * slider159 + lfo3_out * slider182) : (lfo1_out * slider138 + lfo2_out * slider161 + lfo3_out * slider184);
+  lfo_op1_level_mod = lfo1_out * slider139 + lfo2_out * slider162 + lfo3_out * slider185;
+  lfo_op2_level_mod = chord_master_op1 ? (lfo1_out * slider139 + lfo2_out * slider162 + lfo3_out * slider185) : (lfo1_out * slider140 + lfo2_out * slider163 + lfo3_out * slider186);
+  lfo_op3_level_mod = chord_master_op1 ? (lfo1_out * slider139 + lfo2_out * slider162 + lfo3_out * slider185) : (lfo1_out * slider141 + lfo2_out * slider164 + lfo3_out * slider187);
+  lfo_op1_pan_mod = lfo1_out * slider142 + lfo2_out * slider165 + lfo3_out * slider188;
+  lfo_op2_pan_mod = chord_master_op1 ? lfo_op1_pan_mod : (lfo1_out * slider143 + lfo2_out * slider166 + lfo3_out * slider189);
+  lfo_op3_pan_mod = chord_master_op1 ? lfo_op1_pan_mod : (lfo1_out * slider144 + lfo2_out * slider167 + lfo3_out * slider190);
+
+) : (
+  // These variables are already zero while every LFO strip sleeps. Retain a
+  // single assignment so a just-disabled strip clears its previous output.
+  lfo1_out = lfo2_out = lfo3_out = 0;
+  lfo_cut_mod = 0;
+  lfo_op1_pitch_mod = lfo_op2_pitch_mod = lfo_op3_pitch_mod = 0;
+  lfo_op1_pwm_mod = lfo_op2_pwm_mod = lfo_op3_pwm_mod = 0;
+  lfo_op1_level_mod = lfo_op2_level_mod = lfo_op3_level_mod = 0;
+  lfo_op1_pan_mod = lfo_op2_pan_mod = lfo_op3_pan_mod = 0;
+);
+
+op1_ring_eff = op1_ring_cached;
+op2_ring_eff = op2_ring_cached;
+op3_ring_eff = op3_ring_cached;
+op1_sync_eff = op1_sync_cached;
+op2_sync_eff = op2_sync_cached;
+op3_sync_eff = op3_sync_cached;
+
+op1_phase_active = op1_active || (op2_active && (op2_ring_eff || op2_sync_eff));
+op2_phase_active = op2_active || (op3_active && (op3_ring_eff || op3_sync_eff));
+op3_phase_active = op3_active || (op1_active && (op1_ring_eff || op1_sync_eff));
+
+// ARP work sleeps when all modes are off and no glide tail remains.
+arp_work_active = arp_any_mode_cached ||
+  abs(op1_arp_pitch_cur) >= 0.00001 || abs(op2_arp_pitch_cur) >= 0.00001 || abs(op3_arp_pitch_cur) >= 0.00001;
+
+arp_work_active ? (
+  chord_arp_root = chord_arp_count > 0 ? held_top(chord_arp_stack, chord_arp_count) : 60;
+
+  op1_arp_mode_cached > 0 ? (
+    op1_arp_src_base = op1_stack; op1_arp_src_count = op1_held_count; op1_arp_src_root = held_top(op1_stack, op1_held_count);
+    midi_mode_cached == 1 && chord_arp_count > 0 ? (
+      op1_arp_src_base = chord_arp_stack; op1_arp_src_count = chord_arp_count; op1_arp_src_root = chord_arp_root;
+    );
+    midi_mode_cached != 1 && op1_arp_latch_count > 0 ? (
+      op1_arp_src_base = op1_arp_latch; op1_arp_src_count = op1_arp_latch_count; op1_arp_src_root = op1_arp_latch_root;
+    );
+    op1_arp_pitch_tgt = op1_arp_mode_cached == 1
+      ? sid_seq_process(op1_sid_seq, op1_sid_seq_len, op1_arp_src_count, (midi_mode_cached == 1 ? chord_arp_root : op1_arp_latch_root), slider79, op1_arp_clock, op1_arp_step_idx, op1_arp_pitch_tgt)
+      : arp_process(op1_arp_src_base, op1_arp_src_count, op1_arp_pool, op1_arp_mode_cached, slider79, slider82, slider85, op1_arp_clock, op1_arp_step_idx, op1_arp_pitch_tgt, op1_arp_seed);
+  ) : (
+    op1_arp_clock = 0; op1_arp_step_idx = -1; op1_arp_pitch_tgt = 0;
+  );
+
+  op2_arp_mode_cached > 0 ? (
+    op2_arp_src_base = op2_stack; op2_arp_src_count = op2_held_count; op2_arp_src_root = held_top(op2_stack, op2_held_count);
+    midi_mode_cached == 1 && chord_arp_count > 0 ? (
+      op2_arp_src_base = chord_arp_stack; op2_arp_src_count = chord_arp_count; op2_arp_src_root = chord_arp_root;
+    );
+    midi_mode_cached != 1 && op2_arp_latch_count > 0 ? (
+      op2_arp_src_base = op2_arp_latch; op2_arp_src_count = op2_arp_latch_count; op2_arp_src_root = op2_arp_latch_root;
+    );
+    op2_arp_pitch_tgt = op2_arp_mode_cached == 1
+      ? sid_seq_process(op2_sid_seq, op2_sid_seq_len, op2_arp_src_count, (midi_mode_cached == 1 ? chord_arp_root : op2_arp_latch_root), slider80, op2_arp_clock, op2_arp_step_idx, op2_arp_pitch_tgt)
+      : arp_process(op2_arp_src_base, op2_arp_src_count, op2_arp_pool, op2_arp_mode_cached, slider80, slider83, slider86, op2_arp_clock, op2_arp_step_idx, op2_arp_pitch_tgt, op2_arp_seed);
+  ) : (
+    op2_arp_clock = 0; op2_arp_step_idx = -1; op2_arp_pitch_tgt = 0;
+  );
+
+  op3_arp_mode_cached > 0 ? (
+    op3_arp_src_base = op3_stack; op3_arp_src_count = op3_held_count; op3_arp_src_root = held_top(op3_stack, op3_held_count);
+    midi_mode_cached == 1 && chord_arp_count > 0 ? (
+      op3_arp_src_base = chord_arp_stack; op3_arp_src_count = chord_arp_count; op3_arp_src_root = chord_arp_root;
+    );
+    midi_mode_cached != 1 && op3_arp_latch_count > 0 ? (
+      op3_arp_src_base = op3_arp_latch; op3_arp_src_count = op3_arp_latch_count; op3_arp_src_root = op3_arp_latch_root;
+    );
+    op3_arp_pitch_tgt = op3_arp_mode_cached == 1
+      ? sid_seq_process(op3_sid_seq, op3_sid_seq_len, op3_arp_src_count, (midi_mode_cached == 1 ? chord_arp_root : op3_arp_latch_root), slider81, op3_arp_clock, op3_arp_step_idx, op3_arp_pitch_tgt)
+      : arp_process(op3_arp_src_base, op3_arp_src_count, op3_arp_pool, op3_arp_mode_cached, slider81, slider84, slider87, op3_arp_clock, op3_arp_step_idx, op3_arp_pitch_tgt, op3_arp_seed);
+  ) : (
+    op3_arp_clock = 0; op3_arp_step_idx = -1; op3_arp_pitch_tgt = 0;
+  );
+
+  op1_arp_glide_coef >= 1 ? (
+    op1_arp_pitch_cur = op1_arp_pitch_tgt;
+  ) : (
+    op1_arp_pitch_cur += (op1_arp_pitch_tgt - op1_arp_pitch_cur) * op1_arp_glide_coef;
+    abs(op1_arp_pitch_tgt - op1_arp_pitch_cur) < 0.00001 ? op1_arp_pitch_cur = op1_arp_pitch_tgt;
+  );
+  op2_arp_glide_coef >= 1 ? (
+    op2_arp_pitch_cur = op2_arp_pitch_tgt;
+  ) : (
+    op2_arp_pitch_cur += (op2_arp_pitch_tgt - op2_arp_pitch_cur) * op2_arp_glide_coef;
+    abs(op2_arp_pitch_tgt - op2_arp_pitch_cur) < 0.00001 ? op2_arp_pitch_cur = op2_arp_pitch_tgt;
+  );
+  op3_arp_glide_coef >= 1 ? (
+    op3_arp_pitch_cur = op3_arp_pitch_tgt;
+  ) : (
+    op3_arp_pitch_cur += (op3_arp_pitch_tgt - op3_arp_pitch_cur) * op3_arp_glide_coef;
+    abs(op3_arp_pitch_tgt - op3_arp_pitch_cur) < 0.00001 ? op3_arp_pitch_cur = op3_arp_pitch_tgt;
+  );
+
+  op1_arp_pitch_semi = op1_arp_pitch_cur;
+  op2_arp_pitch_semi = op2_arp_pitch_cur;
+  op3_arp_pitch_semi = op3_arp_pitch_cur;
+);
+
+// Op3 internal modulation. Op3 can simply be made silent with Op3 Level = 0,
+// while its oscillator/envelope still remain available as SID-style internal sources.
+op1_pitch_mod = op1_lfo_pitch_used_cached ? lfo_op1_pitch_mod : 0;
+op2_pitch_mod = op2_lfo_pitch_used_cached ? lfo_op2_pitch_mod : 0;
+op3_pitch_mod = op3_lfo_pitch_used_cached ? lfo_op3_pitch_mod : 0;
+op1_pwm_mod = op1_lfo_pwm_used_cached ? (lfo_op1_pwm_mod * 0.50) : 0;
+op2_pwm_mod = op2_lfo_pwm_used_cached ? (lfo_op2_pwm_mod * 0.50) : 0;
+op3_pwm_mod = op3_lfo_pwm_used_cached ? (lfo_op3_pwm_mod * 0.50) : 0;
+filter_cut_mod = lfo_cut_used_cached ? (lfo_cut_mod * 2047) : 0;
+
+op3_osc_mod_active_cached ? (
+  op3_osc_mod_src = op3_mod_prev;
+  op3_osc_mod_target_cached == 1 ? filter_cut_mod += op3_osc_mod_src * op3_osc_mod_depth_cached * 2047;
+  op3_osc_mod_target_cached == 2 ? op1_pitch_mod += op3_osc_mod_src * op3_osc_mod_depth_cached * 24;
+  op3_osc_mod_target_cached == 3 ? op2_pitch_mod += op3_osc_mod_src * op3_osc_mod_depth_cached * 24;
+  op3_osc_mod_target_cached == 4 ? op1_pwm_mod += op3_osc_mod_src * op3_osc_mod_depth_cached * 0.50;
+  op3_osc_mod_target_cached == 5 ? op2_pwm_mod += op3_osc_mod_src * op3_osc_mod_depth_cached * 0.50;
+);
+op3_env_mod_active_cached ? (
+  op3_env_mod_src = op3_env * 2 - 1;
+  op3_env_mod_target_cached == 1 ? filter_cut_mod += op3_env_mod_src * op3_env_mod_depth_cached * 2047;
+  op3_env_mod_target_cached == 2 ? op1_pitch_mod += op3_env_mod_src * op3_env_mod_depth_cached * 24;
+  op3_env_mod_target_cached == 3 ? op2_pitch_mod += op3_env_mod_src * op3_env_mod_depth_cached * 24;
+  op3_env_mod_target_cached == 4 ? op1_pwm_mod += op3_env_mod_src * op3_env_mod_depth_cached * 0.50;
+  op3_env_mod_target_cached == 5 ? op2_pwm_mod += op3_env_mod_src * op3_env_mod_depth_cached * 0.50;
+);
+
+// In Chord Allocate mode the three oscillators are still three independent mono voices,
+// but Op1 becomes the shared SID control panel for timbre/VCA.
+// This lets one pulse/saw/composite setup play all three allocated notes without
+// needing to copy Op1 settings into Op2 and Op3 manually.
+op1_wave_eff = op1_wave_cached;
+op2_wave_eff = op2_wave_cached;
+op3_wave_eff = op3_wave_cached;
+
+op1_level_base = op1_level_cached;
+op2_level_base = op2_level_cached;
+op3_level_base = op3_level_cached;
+
+// LFO Level Depth is tremolo/VCA modulation, not an additive voice opener.
+// This keeps a silent operator silent, and makes level modulation audible because
+// normalization below uses the unmodulated base levels.
+op1_level_eff = op1_lfo_level_used_cached ? max(0, min(2, op1_level_base * max(0, 1 + lfo_op1_level_mod))) : op1_level_base;
+op2_level_eff = op2_lfo_level_used_cached ? max(0, min(2, op2_level_base * max(0, 1 + lfo_op2_level_mod))) : op2_level_base;
+op3_level_eff = op3_lfo_level_used_cached ? max(0, min(2, op3_level_base * max(0, 1 + lfo_op3_level_mod))) : op3_level_base;
+
+// Per-operator stereo pan. Center is exactly unity on both channels so old
+// centered presets keep the same level. LFO modulation is bipolar and clamped.
+// The per-operator Mod Env can also sweep pan. In Chord Allocate, Op1 Pan Mod Depth
+// is the shared panel control, while each allocated voice keeps its own envelope phase.
+op1_pan_dynamic_cached ? (
+  op1_pan_env_mod = op1_mod_env * slider49;
+  op1_pan_eff = max(-1, min(1, slider19 + lfo_op1_pan_mod + op1_pan_env_mod));
+  op1_pan_l = 1 - max(0, op1_pan_eff); op1_pan_r = 1 + min(0, op1_pan_eff);
+) : (
+  op1_pan_l = op1_pan_l_static; op1_pan_r = op1_pan_r_static;
+);
+op2_pan_dynamic_cached ? (
+  op2_pan_env_mod = op2_mod_env * slider50;
+  op2_pan_eff = max(-1, min(1, slider20 + lfo_op2_pan_mod + op2_pan_env_mod));
+  op2_pan_l = 1 - max(0, op2_pan_eff); op2_pan_r = 1 + min(0, op2_pan_eff);
+) : (
+  op2_pan_l = op2_pan_l_static; op2_pan_r = op2_pan_r_static;
+);
+op3_pan_dynamic_cached ? (
+  op3_pan_env_mod = op3_mod_env * slider51;
+  op3_pan_eff = max(-1, min(1, slider21 + lfo_op3_pan_mod + op3_pan_env_mod));
+  op3_pan_l = 1 - max(0, op3_pan_eff); op3_pan_r = 1 + min(0, op3_pan_eff);
+) : (
+  op3_pan_l = op3_pan_l_static; op3_pan_r = op3_pan_r_static;
+);
+
+// ADSR steps/coefs are cached in @slider. In Chord Allocate mode, Op2/Op3
+// use Op1 envelope coefficients while their pitch/legato remain independent.
+// Selectable PWM envelope source for each operator. The source is unipolar 0..1;
+// the bipolar Depth chooses direction and amount. Depth 0 is completely off.
+op1_pwm_dynamic_cached ? (
+  op1_pwm_mod += op1_mod_env * slider55;
+  op1_pw_eff = max(0.0002, min(1.25, op1_pw_base + op1_pwm_mod));
+) : (
+  op1_pw_eff = op1_pw_base;
+);
+op2_pwm_dynamic_cached ? (
+  op2_pwm_mod += op2_mod_env * op2_pwm_mod_depth_cached;
+  op2_pw_eff = chord_master_op1 ? max(0.0002, min(1.25, op1_pw_base + op2_pwm_mod)) : max(0.0002, min(1.25, op2_pw_base + op2_pwm_mod));
+) : (
+  op2_pw_eff = chord_master_op1 ? op1_pw_base : op2_pw_base;
+);
+op3_pwm_dynamic_cached ? (
+  op3_pwm_mod += op3_mod_env * op3_pwm_mod_depth_cached;
+  op3_pw_eff = chord_master_op1 ? max(0.0002, min(1.25, op1_pw_base + op3_pwm_mod)) : max(0.0002, min(1.25, op3_pw_base + op3_pwm_mod));
+) : (
+  op3_pw_eff = chord_master_op1 ? op1_pw_base : op3_pw_base;
+);
+
+// -------------------- PER-OPERATOR MOD ENV STATE MACHINES --------------------
+// These run before oscillator frequency calculation; their current values also control optional LFO-rate modulation.
+op1_mod_stage == 1 ? (
+  op1_mod_env += op1_mod_att_step;
+  op1_mod_env >= 1 ? (op1_mod_env = 1; op1_mod_stage = 2;);
+) : op1_mod_stage == 2 ? (
+  op1_mod_env -= op1_mod_dec_step;
+  op1_mod_env <= op1_mod_sus ? (op1_mod_env = op1_mod_sus; op1_mod_stage = 3;);
+) : op1_mod_stage == 3 ? (
+  op1_mod_env = op1_mod_sus;
+) : op1_mod_stage == 4 ? (
+  op1_mod_env -= max(0.0000001, op1_mod_env) * max(0.0000000001, op1_mod_rel_latched);
+  op1_mod_env <= 0.0001 ? (op1_mod_env = 0; op1_mod_stage = 0;);
+);
+
+op2_mod_stage == 1 ? (
+  op2_mod_env += op2_mod_att_step;
+  op2_mod_env >= 1 ? (op2_mod_env = 1; op2_mod_stage = 2;);
+) : op2_mod_stage == 2 ? (
+  op2_mod_env -= op2_mod_dec_step;
+  op2_mod_env <= op2_mod_sus ? (op2_mod_env = op2_mod_sus; op2_mod_stage = 3;);
+) : op2_mod_stage == 3 ? (
+  op2_mod_env = op2_mod_sus;
+) : op2_mod_stage == 4 ? (
+  op2_mod_env -= max(0.0000001, op2_mod_env) * max(0.0000000001, op2_mod_rel_latched);
+  op2_mod_env <= 0.0001 ? (op2_mod_env = 0; op2_mod_stage = 0;);
+);
+
+op3_mod_stage == 1 ? (
+  op3_mod_env += op3_mod_att_step;
+  op3_mod_env >= 1 ? (op3_mod_env = 1; op3_mod_stage = 2;);
+) : op3_mod_stage == 2 ? (
+  op3_mod_env -= op3_mod_dec_step;
+  op3_mod_env <= op3_mod_sus ? (op3_mod_env = op3_mod_sus; op3_mod_stage = 3;);
+) : op3_mod_stage == 3 ? (
+  op3_mod_env = op3_mod_sus;
+) : op3_mod_stage == 4 ? (
+  op3_mod_env -= max(0.0000001, op3_mod_env) * max(0.0000000001, op3_mod_rel_latched);
+  op3_mod_env <= 0.0001 ? (op3_mod_env = 0; op3_mod_stage = 0;);
+);
+
+// -------------------- INDEPENDENT NOTE-ON DRIFT --------------------
+// Drift is sampled on Note On and converted to cents once per audio block.
+
+op1_active ? (
+  op1_pitch_dynamic_cached ? (
+    op1_porta_coef < 1 ? op1_cur_note += (op1_target_note - op1_cur_note) * op1_porta_coef;
+    op1_arp_base_note = (midi_mode_cached == 1 && chord_arp_count > 0 && op1_arp_mode_cached > 0) ? chord_arp_root : ((op1_arp_mode_cached > 0 && op1_arp_latch_count > 0) ? op1_arp_release_base : op1_cur_note);
+    op1_mod_env_semi = abs(slider52) > pan_eps ? (op1_mod_env * slider52) : 0;
+    op1_freq = note_hz(op1_arp_base_note + op1_arp_pitch_semi + slider25 + slider28/100 + op1_mod_env_semi + op1_pitch_mod + drift1_cents_cached/100 + op1_bend * slider91);
+    op1_inc = op1_freq * inv_srate;
+    op1_aa_lev = op1_wave_cached == 3 ? 0 : aa_mip_level(max(0.0000001, op1_inc * op1_aa_inc_mul_cached));
+  ) : (
+    op1_freq = op1_static_freq_cached;
+    op1_inc = op1_static_inc_cached;
+    op1_aa_lev = op1_static_aa_lev_cached;
+  );
+) : (
+  !op1_phase_active ? op1_inc = 0;
+);
+
+op2_active ? (
+  op2_pitch_dynamic_cached ? (
+    op2_porta_coef < 1 ? op2_cur_note += (op2_target_note - op2_cur_note) * op2_porta_coef;
+    op2_arp_base_note = (midi_mode_cached == 1 && chord_arp_count > 0 && op2_arp_mode_cached > 0) ? chord_arp_root : ((op2_arp_mode_cached > 0 && op2_arp_latch_count > 0) ? op2_arp_release_base : op2_cur_note);
+    op2_mod_env_semi = abs(op2_pitch_mod_depth_cached) > pan_eps ? (op2_mod_env * op2_pitch_mod_depth_cached) : 0;
+    op2_freq = note_hz(op2_arp_base_note + op2_arp_pitch_semi + slider26 + op2_fine_cached/100 + op2_mod_env_semi + op2_pitch_mod + drift2_cents_cached/100 + op2_bend * op2_bend_range_cached);
+    op2_inc = op2_freq * inv_srate;
+    op2_aa_lev = op2_wave_cached == 3 ? 0 : aa_mip_level(max(0.0000001, op2_inc * op2_aa_inc_mul_cached));
+  ) : (
+    op2_freq = op2_static_freq_cached;
+    op2_inc = op2_static_inc_cached;
+    op2_aa_lev = op2_static_aa_lev_cached;
+  );
+) : (
+  !op2_phase_active ? op2_inc = 0;
+);
+
+op3_active ? (
+  op3_pitch_dynamic_cached ? (
+    op3_porta_coef < 1 ? op3_cur_note += (op3_target_note - op3_cur_note) * op3_porta_coef;
+    op3_arp_base_note = (midi_mode_cached == 1 && chord_arp_count > 0 && op3_arp_mode_cached > 0) ? chord_arp_root : ((op3_arp_mode_cached > 0 && op3_arp_latch_count > 0) ? op3_arp_release_base : op3_cur_note);
+    op3_mod_env_semi = abs(op3_pitch_mod_depth_cached) > pan_eps ? (op3_mod_env * op3_pitch_mod_depth_cached) : 0;
+    op3_freq = note_hz(op3_arp_base_note + op3_arp_pitch_semi + slider27 + op3_fine_cached/100 + op3_mod_env_semi + op3_pitch_mod + drift3_cents_cached/100 + op3_bend * op3_bend_range_cached);
+    op3_inc = op3_freq * inv_srate;
+    op3_aa_lev = op3_wave_cached == 3 ? 0 : aa_mip_level(max(0.0000001, op3_inc * op3_aa_inc_mul_cached));
+  ) : (
+    op3_freq = op3_static_freq_cached;
+    op3_inc = op3_static_inc_cached;
+    op3_aa_lev = op3_static_aa_lev_cached;
+  );
+) : (
+  !op3_phase_active ? op3_inc = 0;
+);
+
+// -------------------- LIGHTWEIGHT OSC/RING OVERSAMPLING --------------------
+// Auto is permanent. Normal mipmapped waves remain at 1x; only Ring/Sync
+// enter the adaptive oversampling path. slider1 is deliberately free.
+os_factor = 1;
+
+max_inc = max(max(op1_phase_active ? op1_inc : 0, op2_phase_active ? op2_inc : 0), op3_phase_active ? op3_inc : 0);
+ring_sync_hot = (op1_ring_eff || op2_ring_eff || op3_ring_eff || op1_sync_eff || op2_sync_eff || op3_sync_eff);
+
+ring_sync_hot ? (
+  // Only genuinely discontinuous cross-oscillator operations keep oversampling.
+  // Plain Triangle/Saw/Pulse use source-band-limited mip tables and always remain 1x.
+  os_factor = 2;
+  max_inc > 0.032 ? os_factor = 4;
+  max_inc > 0.065 ? os_factor = 8;
+  max_inc > 0.105 ? os_factor = 16;
+);
+
+aa_on = 1;
+aa_wt_enable = !ring_sync_hot;
+op1_acc = 0; op2_acc = 0; op3_acc = 0;
+
+os_factor == 1 ? (
+  op1_prevphase = op1_phase; op2_prevphase = op2_phase; op3_prevphase = op3_phase;
+
+  op1_test_cached ? (
+    op1_phase = 0;
+  ) : (
+    op1_phase_active ? (
+      op1_phase += op1_inc;
+      op1_phase >= 1 ? op1_phase -= floor(op1_phase);
+      op1_noise_clock += op1_inc * 4;
+      while (op1_noise_clock >= 1) (
+        op1_noise_clock -= 1;
+        op1_noise = next_noise_blend(op1_seed, op1_sid_seed, slider9);
+      );
+    );
+  );
+  op2_test_cached ? (
+    op2_phase = 0;
+  ) : (
+    op2_phase_active ? (
+      op2_phase += op2_inc;
+      op2_phase >= 1 ? op2_phase -= floor(op2_phase);
+      op2_noise_clock += op2_inc * 4;
+      while (op2_noise_clock >= 1) (
+        op2_noise_clock -= 1;
+        op2_noise = next_noise_blend(op2_seed, op2_sid_seed, slider9);
+      );
+    );
+  );
+  op3_test_cached ? (
+    op3_phase = 0;
+  ) : (
+    op3_phase_active ? (
+      op3_phase += op3_inc;
+      op3_phase >= 1 ? op3_phase -= floor(op3_phase);
+      op3_noise_clock += op3_inc * 4;
+      while (op3_noise_clock >= 1) (
+        op3_noise_clock -= 1;
+        op3_noise = next_noise_blend(op3_seed, op3_sid_seed, slider9);
+      );
+    );
+  );
+
+  op1_msb_rise = (op1_prevphase < 0.5) && (op1_phase >= 0.5);
+  op2_msb_rise = (op2_prevphase < 0.5) && (op2_phase >= 0.5);
+  op3_msb_rise = (op3_prevphase < 0.5) && (op3_phase >= 0.5);
+  (op1_sync_eff && op3_msb_rise) ? op1_phase = 0;
+  (op2_sync_eff && op1_msb_rise) ? op2_phase = 0;
+  (op3_sync_eff && op2_msb_rise) ? op3_phase = 0;
+
+  op1_acc = (op1_active && !op1_test_cached) ? osc_wave(op1_wave_eff, op1_phase, op1_inc, op1_pw_eff, op1_noise, 0, slider5, op1_ring_eff, op3_phase, op3_inc, aa_on, op1_aa_lev) : 0;
+  op2_acc = (op2_active && !op2_audio_test_cached) ? osc_wave(op2_wave_eff, op2_phase, op2_inc, op2_pw_eff, op2_noise, 0, slider5, op2_ring_eff, op1_phase, op1_inc, aa_on, op2_aa_lev) : 0;
+  op3_acc = (op3_active && !op3_audio_test_cached) ? osc_wave(op3_wave_eff, op3_phase, op3_inc, op3_pw_eff, op3_noise, 0, slider5, op3_ring_eff, op2_phase, op2_inc, aa_on, op3_aa_lev) : 0;
+
+  op1_raw = op1_acc; op2_raw = op2_acc; op3_raw = op3_acc;
+) : (
+  os_step = 1 / os_factor;
+  os_i = 0;
+  while (os_i < os_factor) (
+    op1_prevphase = op1_phase; op2_prevphase = op2_phase; op3_prevphase = op3_phase;
+
+    op1_test_cached ? (
+      op1_phase = 0;
+    ) : (
+      op1_phase_active ? (
+        op1_phase += op1_inc * os_step;
+        op1_phase >= 1 ? op1_phase -= floor(op1_phase);
+        op1_noise_clock += op1_inc * 4 * os_step;
+        while (op1_noise_clock >= 1) (
+          op1_noise_clock -= 1;
+          op1_noise = next_noise_blend(op1_seed, op1_sid_seed, slider9);
+        );
+      );
+    );
+    op2_test_cached ? (
+      op2_phase = 0;
+    ) : (
+      op2_phase_active ? (
+        op2_phase += op2_inc * os_step;
+        op2_phase >= 1 ? op2_phase -= floor(op2_phase);
+        op2_noise_clock += op2_inc * 4 * os_step;
+        while (op2_noise_clock >= 1) (
+          op2_noise_clock -= 1;
+          op2_noise = next_noise_blend(op2_seed, op2_sid_seed, slider9);
+        );
+      );
+    );
+    op3_test_cached ? (
+      op3_phase = 0;
+    ) : (
+      op3_phase_active ? (
+        op3_phase += op3_inc * os_step;
+        op3_phase >= 1 ? op3_phase -= floor(op3_phase);
+        op3_noise_clock += op3_inc * 4 * os_step;
+        while (op3_noise_clock >= 1) (
+          op3_noise_clock -= 1;
+          op3_noise = next_noise_blend(op3_seed, op3_sid_seed, slider9);
+        );
+      );
+    );
+
+    op1_msb_rise = (op1_prevphase < 0.5) && (op1_phase >= 0.5);
+    op2_msb_rise = (op2_prevphase < 0.5) && (op2_phase >= 0.5);
+    op3_msb_rise = (op3_prevphase < 0.5) && (op3_phase >= 0.5);
+    (op1_sync_eff && op3_msb_rise) ? op1_phase = 0;
+    (op2_sync_eff && op1_msb_rise) ? op2_phase = 0;
+    (op3_sync_eff && op2_msb_rise) ? op3_phase = 0;
+
+    op1_acc += (op1_active && !op1_test_cached) ? osc_wave(op1_wave_eff, op1_phase, op1_inc * os_step, op1_pw_eff, op1_noise, 0, slider5, op1_ring_eff, op3_phase, op3_inc * os_step, aa_on, op1_aa_lev) : 0;
+    op2_acc += (op2_active && !op2_audio_test_cached) ? osc_wave(op2_wave_eff, op2_phase, op2_inc * os_step, op2_pw_eff, op2_noise, 0, slider5, op2_ring_eff, op1_phase, op1_inc * os_step, aa_on, op2_aa_lev) : 0;
+    op3_acc += (op3_active && !op3_audio_test_cached) ? osc_wave(op3_wave_eff, op3_phase, op3_inc * os_step, op3_pw_eff, op3_noise, 0, slider5, op3_ring_eff, op2_phase, op2_inc * os_step, aa_on, op3_aa_lev) : 0;
+    os_i += 1;
+  );
+  op1_raw = op1_acc / os_factor;
+  op2_raw = op2_acc / os_factor;
+  op3_raw = op3_acc / os_factor;
+);
+
+// High-register BLEP make-up. Keep it before VCA/filter so the rest of the synth
+// behaves normally, but avoid the "cleaned until it disappears" effect on high notes.
+((aa_on && !aa_wt_enable) && op1_active) ? op1_raw *= aa_energy_comp(op1_inc, op1_wave_eff, op1_ring_eff, op1_sync_eff, os_factor, aa_on);
+((aa_on && !aa_wt_enable) && op2_active) ? op2_raw *= aa_energy_comp(op2_inc, op2_wave_eff, op2_ring_eff, op2_sync_eff, os_factor, aa_on);
+((aa_on && !aa_wt_enable) && op3_active) ? op3_raw *= aa_energy_comp(op3_inc, op3_wave_eff, op3_ring_eff, op3_sync_eff, os_factor, aa_on);
+
+// -------------------- ADSR STATE MACHINES --------------------
+op1_active ? (
+  op1_stage == 1 ? (
+    op1_env += op1_att_step;
+    op1_env >= 1 ? (op1_env = 1; op1_stage = 2;);
+  ) :
+  op1_stage == 2 ? (
+    op1_env -= op1_dec_step;
+    op1_env <= op1_sus_eff ? (op1_env = op1_sus_eff; op1_stage = 3;);
+  ) :
+  op1_stage == 3 ? (
+    op1_env = op1_sus_eff;
+  ) :
+  op1_stage == 4 ? (
+    op1_env -= max(0.0000001, op1_env) * max(0.0000000001, op1_rel_latched);
+    op1_env <= 0.0001 ? (op1_env = 0; op1_stage = 0; op1_note = -1; arp_latch_clear(op1_arp_latch_count); op1_sid_seq_len = 0; arp_reset_op1(););
+  );
+) : op1_raw = 0;
+
+op2_active ? (
+  op2_stage == 1 ? (
+    op2_env += op2_att_step;
+    op2_env >= 1 ? (op2_env = 1; op2_stage = 2;);
+  ) :
+  op2_stage == 2 ? (
+    op2_env -= op2_dec_step;
+    op2_env <= op2_sus_eff ? (op2_env = op2_sus_eff; op2_stage = 3;);
+  ) :
+  op2_stage == 3 ? (
+    op2_env = op2_sus_eff;
+  ) :
+  op2_stage == 4 ? (
+    op2_env -= max(0.0000001, op2_env) * max(0.0000000001, op2_rel_latched);
+    op2_env <= 0.0001 ? (op2_env = 0; op2_stage = 0; op2_note = -1; arp_latch_clear(op2_arp_latch_count); op2_sid_seq_len = 0; arp_reset_op2(););
+  );
+) : op2_raw = 0;
+
+op3_active ? (
+  op3_stage == 1 ? (
+    op3_env += op3_att_step;
+    op3_env >= 1 ? (op3_env = 1; op3_stage = 2;);
+  ) :
+  op3_stage == 2 ? (
+    op3_env -= op3_dec_step;
+    op3_env <= op3_sus_eff ? (op3_env = op3_sus_eff; op3_stage = 3;);
+  ) :
+  op3_stage == 3 ? (
+    op3_env = op3_sus_eff;
+  ) :
+  op3_stage == 4 ? (
+    op3_env -= max(0.0000001, op3_env) * max(0.0000000001, op3_rel_latched);
+    op3_env <= 0.0001 ? (op3_env = 0; op3_stage = 0; op3_note = -1; arp_latch_clear(op3_arp_latch_count); op3_sid_seq_len = 0; arp_reset_op3(););
+  );
+) : op3_raw = 0;
+
+op1_sig = op1_raw * op1_env * op1_level_eff;
+op2_sig = op2_raw * op2_env * op2_level_eff;
+op3_sig = op3_raw * op3_env * op3_level_eff;
+op3_mod_prev = op3_raw * op3_env;
+op3_audio_sig = op3_sig;
+
+// Dedicated filter ADSR. It follows Op1 Mode Trigger as the shared filter gate rule:
+// Trigger = every Note On restarts the filter envelope.
+// Legato  = only the first held note restarts it; overlapped notes only move pitch.
+filter_stage == 1 ? (
+  filter_env += filter_att_step;
+  filter_env >= 1 ? (filter_env = 1; filter_stage = 2;);
+) :
+filter_stage == 2 ? (
+  filter_env -= filter_dec_step;
+  filter_env <= filter_sustain_cached ? (filter_env = filter_sustain_cached; filter_stage = 3;);
+) :
+filter_stage == 3 ? (
+  filter_env = filter_sustain_cached;
+) :
+filter_stage == 4 ? (
+  filter_env -= max(0.0000001, filter_env) * max(0.0000000001, filter_rel_latched);
+  filter_env <= 0.0001 ? (filter_env = 0; filter_stage = 0;);
+);
+
+// Bipolar filter envelope:
+// positive Amount opens the cutoff, negative Amount closes it.
+// slider108 may also be negative as a virtual undercut below register 0.
+// The real filter register is finally clamped to 0..2047.
+filter_cut_dynamic_cached ? (
+  filter_key_mod = (filter_key_note - 60) * 32 * slider113;
+  dyn_cut_reg = max(0, min(2047, slider108 + slider117 * filter_env + filter_cut_mod + filter_key_mod));
+  dyn_cut_norm = dyn_cut_reg / 2047;
+  !model_6581_cached ? (
+    dyn_filter_fc = 4 + pow(dyn_cut_norm, 1.38) * 12500;
+  ) : (
+    dyn_filter_fc = 28 + pow(dyn_cut_norm, 2.12) * 8170;
+  );
+  dyn_filter_fc = min(dyn_filter_fc, srate * 0.42);
+  filter_f = 2 * sin($pi * dyn_filter_fc / srate);
+  filter_f = min(0.98, max(0.00015, filter_f));
+  r4_body_amt = model_6581_cached ? (0.22 * pow(1 - dyn_cut_norm, 2.35)) : 0;
+) : (
+  filter_f = static_filter_f_cached;
+  r4_body_amt = static_r4_body_amt_cached;
+);
+
+// Stereo per-operator routing. Each voice is panned before the shared filter,
+// so filtered and direct paths preserve the same pan position. Center remains
+// bit-for-bit level-compatible in principle: both channel gains are unity.
+filter_in_l = 0; filter_in_r = 0;
+dry_out_l = 0; dry_out_r = 0;
+norm_total = norm_total_cached;
+mono_mix_fast = mono_output_fast_safe && !mix_stereo_needed_cached;
+
+slider114 >= 1 ? (
+  filter_in_l += op1_sig * op1_pan_l;
+  filter_stereo_needed_cached ? filter_in_r += op1_sig * op1_pan_r;
+) : (
+  dry_out_l += op1_sig * op1_pan_l; !mono_mix_fast ? dry_out_r += op1_sig * op1_pan_r;
+);
+op2_to_filter_cached >= 1 ? (
+  filter_in_l += op2_sig * op2_pan_l;
+  filter_stereo_needed_cached ? filter_in_r += op2_sig * op2_pan_r;
+) : (
+  dry_out_l += op2_sig * op2_pan_l; !mono_mix_fast ? dry_out_r += op2_sig * op2_pan_r;
+);
+op3_to_filter_cached >= 1 ? (
+  filter_in_l += op3_audio_sig * op3_pan_l;
+  filter_stereo_needed_cached ? filter_in_r += op3_audio_sig * op3_pan_r;
+) : (
+  !voice3_off_cached ? (dry_out_l += op3_audio_sig * op3_pan_l; !mono_mix_fast ? dry_out_r += op3_audio_sig * op3_pan_r;);
+);
+
+filter_x_l = filter_in_l * filter_input_gain;
+// Composite Character removed: no additional fixed pre-filter character drive.
+
+// SID-style multimode core:
+// one shared filter state, then LP/BP/HP outputs are switched and summed.
+// 6581 uses a softly-limited feedback term and a tiny analog-style state loss;
+// this keeps resonance alive but below free self-oscillation.
+// Linear feedback path. The 6581 character must not be created by clipping
+// inside the resonant loop, otherwise high resonance reshapes the oscillator.
+filter_hp_l = filter_x_l - filter_lp_l - filter_damp * filter_bp_l;
+filter_bp_l += filter_f * filter_hp_l;
+filter_lp_l += filter_f * filter_bp_l;
+filter_bp_l *= filter_state_loss;
+filter_lp_l *= filter_state_loss;
+
+// Safety rails: this Lab should not self-oscillate or explode.
+// Keep the state variables inside a musical analog-ish range.
+filter_bp_l = max(-2.5, min(2.5, filter_bp_l));
+filter_lp_l = max(-2.5, min(2.5, filter_lp_l));
+filter_hp_l = max(-2.5, min(2.5, filter_hp_l));
+
+// No note-off gate here: free oscillation is prevented upstream by damping,
+// feedback soft-limiting and continuous analog-style state loss.
+filter_idle_gate = 0;
+
+// Separate 6581 R4 low body leakage. This is not "dry bypass":
+// it is a dark residual path so LP closed is still alive/corporeal.
+filter_r4_body_lp_l += r4_body_f * (filter_x_l - filter_r4_body_lp_l);
+
+// Small internal containment. More obvious on 6581, very gentle on 8580.
+model_6581_cached ? (
+  // No saturation inside the 6581 resonant states. Just a tiny, clean
+  // level shaping/containment so the BP presence remains musical.
+  filter_bp_l *= filter_state_bp_mul;
+  filter_hp_l *= filter_state_hp_mul;
+  filter_lp_l *= filter_state_lp_mul;
+) : (
+  // 8580: cleaner, but resonance can still make useful kick transients.
+  abs(filter_bp_l) > 5 ? filter_bp_l *= 0.5;
+  abs(filter_lp_l) > 5 ? filter_lp_l *= 0.5;
+);
+
+filter_out_l = 0;
+// clean_makeup_6581 is cached in @slider.
+
+filter_lp_on_cached ? (
+  filter_out_l += filter_lp_l * filter_lp_weight;
+  // 6581 LP never fully disappears at low cutoff.
+  filter_out_l += filter_r4_body_lp_l * r4_body_amt;
+);
+filter_bp_on_cached ? filter_out_l += filter_bp_l * filter_bp_weight;
+filter_hp_on_cached ? filter_out_l += filter_hp_l * filter_hp_weight;
+
+// Lab behavior:
+// if LP/BP/HP are all Off, the routed operators bypass the filter.
+// So the oscillator/VCA part remains audible before choosing VCF outputs.
+filter_mode_count_cached <= 0 ? (
+  // No filter mode selected: routed operators are clean/bypassed.
+  // Give only the 6581 clean path a small +1 dB match, separate from filter make-up.
+  filter_out_l = filter_in_l * clean_makeup_6581;
+) : (
+  // Resonance should bring cream_l, not screaming auto-oscillation.
+  // The 6581 uses a hybrid strategy: stable core + clean resonant presence
+  // from the already-damped BP state. This adds bite without raising feedback.
+  model_6581_cached ? (
+    filter_out_l *= filter_cream_gain;
+    // Clean post-filter resonance: no softclip here, so resonance enhances the
+    // filter peak without turning the pre-filter saw into a square/pulse.
+    filter_out_l += filter_bp_l * filter_res_presence_6581_coef;
+    // Extra clean 6581 LP resonance. This is post-core only: it raises the
+    // low-pass resonant peak without driving/squaring the pre-filter saw.
+    filter_lp_on_cached ? (
+      filter_out_l += filter_bp_l * filter_lp_res_presence_coef;
+    );
+    // 6581 colour after the resonant stage. Use parallel saturation instead of
+    // replacing the whole signal: this keeps the R4 dirt but preserves more ADSR
+    // movement and avoids the swollen, sustain-like envelope flattening.
+    // v1.84: slightly stronger post-filter colour, still parallel and dynamic.
+    // The -12 dB trim remains later in the chain, so this restores density rather
+    // than raising the filtered output level.
+    post_dirty_l = softclip(filter_out_l * filter_post_col) * filter_post_col_inv;
+    filter_out_l = filter_out_l * filter_post_clean_mix + post_dirty_l * filter_post_mix;
+  ) : (
+    // v1.86: twice the previous clean 8580 resonance presence. This follows
+    // the stronger core feedback without adding a simple fixed output boost.
+    filter_out_l *= filter_cream_gain;
+    filter_out_l += filter_bp_l * filter_res_presence_8580_coef;
+  );
+
+  // 6581 three-state mode (LP+BP+HP) was perceptually lower: lift only that combo.
+  (model_6581_cached && filter_all_modes_cached) ? filter_out_l *= 1.052; // v1.56: previous 1.18 lift lowered by 1 dB
+
+  // 6581 compensation belongs to the filter path, not to the oscillator model.
+  // The 6581 curve is darker and the filtered output loses much more perceived level
+  // than the 8580, especially in LP mode and with lower cutoff values.
+  // Apply make-up only when at least one filter output mode is selected.
+  filter_out_l *= filter_makeup_6581;
+
+  // v1.83: reduce only the active 6581 filtered branch by 12 dB.
+  // This is deliberately post-filter/post-colour so cutoff, resonance, saturation
+  // and model character remain unchanged; only the resulting level is lower.
+  model_6581_cached ? filter_out_l *= 0.2511886432;
+);
+
+filter_out_l *= filter_gain;
+
+filter_stereo_needed_cached ? (
+filter_x_r = filter_in_r * filter_input_gain;
+// Composite Character removed: no additional fixed pre-filter character drive.
+
+// SID-style multimode core:
+// one shared filter state, then LP/BP/HP outputs are switched and summed.
+// 6581 uses a softly-limited feedback term and a tiny analog-style state loss;
+// this keeps resonance alive but below free self-oscillation.
+// Linear feedback path. The 6581 character must not be created by clipping
+// inside the resonant loop, otherwise high resonance reshapes the oscillator.
+filter_hp_r = filter_x_r - filter_lp_r - filter_damp * filter_bp_r;
+filter_bp_r += filter_f * filter_hp_r;
+filter_lp_r += filter_f * filter_bp_r;
+filter_bp_r *= filter_state_loss;
+filter_lp_r *= filter_state_loss;
+
+// Safety rails: this Lab should not self-oscillate or explode.
+// Keep the state variables inside a musical analog-ish range.
+filter_bp_r = max(-2.5, min(2.5, filter_bp_r));
+filter_lp_r = max(-2.5, min(2.5, filter_lp_r));
+filter_hp_r = max(-2.5, min(2.5, filter_hp_r));
+
+// No note-off gate here: free oscillation is prevented upstream by damping,
+// feedback soft-limiting and continuous analog-style state loss.
+filter_idle_gate = 0;
+
+// Separate 6581 R4 low body leakage. This is not "dry bypass":
+// it is a dark residual path so LP closed is still alive/corporeal.
+filter_r4_body_lp_r += r4_body_f * (filter_x_r - filter_r4_body_lp_r);
+
+// Small internal containment. More obvious on 6581, very gentle on 8580.
+model_6581_cached ? (
+  // No saturation inside the 6581 resonant states. Just a tiny, clean
+  // level shaping/containment so the BP presence remains musical.
+  filter_bp_r *= filter_state_bp_mul;
+  filter_hp_r *= filter_state_hp_mul;
+  filter_lp_r *= filter_state_lp_mul;
+) : (
+  // 8580: cleaner, but resonance can still make useful kick transients.
+  abs(filter_bp_r) > 5 ? filter_bp_r *= 0.5;
+  abs(filter_lp_r) > 5 ? filter_lp_r *= 0.5;
+);
+
+filter_out_r = 0;
+// clean_makeup_6581 is cached in @slider.
+
+filter_lp_on_cached ? (
+  filter_out_r += filter_lp_r * filter_lp_weight;
+  // 6581 LP never fully disappears at low cutoff.
+  filter_out_r += filter_r4_body_lp_r * r4_body_amt;
+);
+filter_bp_on_cached ? filter_out_r += filter_bp_r * filter_bp_weight;
+filter_hp_on_cached ? filter_out_r += filter_hp_r * filter_hp_weight;
+
+// Lab behavior:
+// if LP/BP/HP are all Off, the routed operators bypass the filter.
+// So the oscillator/VCA part remains audible before choosing VCF outputs.
+filter_mode_count_cached <= 0 ? (
+  // No filter mode selected: routed operators are clean/bypassed.
+  // Give only the 6581 clean path a small +1 dB match, separate from filter make-up.
+  filter_out_r = filter_in_r * clean_makeup_6581;
+) : (
+  // Resonance should bring cream_r, not screaming auto-oscillation.
+  // The 6581 uses a hybrid strategy: stable core + clean resonant presence
+  // from the already-damped BP state. This adds bite without raising feedback.
+  model_6581_cached ? (
+    filter_out_r *= filter_cream_gain;
+    // Clean post-filter resonance: no softclip here, so resonance enhances the
+    // filter peak without turning the pre-filter saw into a square/pulse.
+    filter_out_r += filter_bp_r * filter_res_presence_6581_coef;
+    // Extra clean 6581 LP resonance. This is post-core only: it raises the
+    // low-pass resonant peak without driving/squaring the pre-filter saw.
+    filter_lp_on_cached ? (
+      filter_out_r += filter_bp_r * filter_lp_res_presence_coef;
+    );
+    // 6581 colour after the resonant stage. Use parallel saturation instead of
+    // replacing the whole signal: this keeps the R4 dirt but preserves more ADSR
+    // movement and avoids the swollen, sustain-like envelope flattening.
+    // v1.84: slightly stronger post-filter colour, still parallel and dynamic.
+    // The -12 dB trim remains later in the chain, so this restores density rather
+    // than raising the filtered output level.
+    post_dirty_r = softclip(filter_out_r * filter_post_col) * filter_post_col_inv;
+    filter_out_r = filter_out_r * filter_post_clean_mix + post_dirty_r * filter_post_mix;
+  ) : (
+    // v1.86: twice the previous clean 8580 resonance presence. This follows
+    // the stronger core feedback without adding a simple fixed output boost.
+    filter_out_r *= filter_cream_gain;
+    filter_out_r += filter_bp_r * filter_res_presence_8580_coef;
+  );
+
+  // 6581 three-state mode (LP+BP+HP) was perceptually lower: lift only that combo.
+  (model_6581_cached && filter_all_modes_cached) ? filter_out_r *= 1.052; // v1.56: previous 1.18 lift lowered by 1 dB
+
+  // 6581 compensation belongs to the filter path, not to the oscillator model.
+  // The 6581 curve is darker and the filtered output loses much more perceived level
+  // than the 8580, especially in LP mode and with lower cutoff values.
+  // Apply make-up only when at least one filter output mode is selected.
+  filter_out_r *= filter_makeup_6581;
+
+  // v1.83: reduce only the active 6581 filtered branch by 12 dB.
+  // This is deliberately post-filter/post-colour so cutoff, resonance, saturation
+  // and model character remain unchanged; only the resulting level is lower.
+  model_6581_cached ? filter_out_r *= 0.2511886432;
+);
+
+filter_out_r *= filter_gain;
+) : (
+  // All filtered voices are centered: reuse the mono filter result and keep the
+  // right state synchronized so enabling Pan later does not wake an old state.
+  filter_hp_r = filter_hp_l;
+  filter_bp_r = filter_bp_l;
+  filter_lp_r = filter_lp_l;
+  filter_r4_body_lp_r = filter_r4_body_lp_l;
+  filter_out_r = filter_out_l;
+);
+
+mono_mix_fast ? dry_out_r = dry_out_l;
+model_6581_cached ? (
+  dry_out_l *= clean_makeup_6581;
+  mono_mix_fast ? dry_out_r = dry_out_l : dry_out_r *= clean_makeup_6581;
+);
+
+mix_l = (filter_out_l + dry_out_l) / norm_total;
+mono_mix_fast ? mix_r = mix_l : mix_r = (filter_out_r + dry_out_r) / norm_total;
+
+model_6581_cached ? (
+  final_dirty_l = softclip(mix_l * out_drive) / out_drive;
+  mix_l = mix_l * 0.88 + final_dirty_l * 0.12;
+  mono_mix_fast ? (
+    mix_r = mix_l;
+  ) : (
+    final_dirty_r = softclip(mix_r * out_drive) / out_drive;
+    mix_r = mix_r * 0.88 + final_dirty_r * 0.12;
+  );
+);
+
+mix_l *= composite_makeup_gain * sid_6581_global_gain;
+mono_mix_fast ? mix_r = mix_l : mix_r *= composite_makeup_gain * sid_6581_global_gain;
+
+// Final SID output stage. In a proven-synchronized mono state, process the analogue
+// amplifier/RC/DC chain once and mirror both the sample and its state to the right.
+out_amp_l = sid_output_amp(mix_l);
+out_lp_mix_l += (out_amp_l - out_lp_mix_l) * out_lp_alpha;
+out_stage_l = out_lp_mix_l - out_hp_x_mix_l + out_hp_r * out_hp_y_mix_l;
+out_hp_x_mix_l = out_lp_mix_l; out_hp_y_mix_l = out_stage_l;
+mix_l = out_stage_l * master_gain;
+
+mono_mix_fast ? (
+  out_lp_mix_r = out_lp_mix_l;
+  out_hp_x_mix_r = out_hp_x_mix_l;
+  out_hp_y_mix_r = out_hp_y_mix_l;
+  mix_r = mix_l;
+) : (
+  out_amp_r = sid_output_amp(mix_r);
+  out_lp_mix_r += (out_amp_r - out_lp_mix_r) * out_lp_alpha;
+  out_stage_r = out_lp_mix_r - out_hp_x_mix_r + out_hp_r * out_hp_y_mix_r;
+  out_hp_x_mix_r = out_lp_mix_r; out_hp_y_mix_r = out_stage_r;
+  mix_r = out_stage_r * master_gain;
+);
+
+// Audio Mode:
+// Stereo skips all artificial stem preparation and output-stage processing.
+audio_multichannel_cached ? (
+  stem_pre_gain = composite_makeup_gain * sid_6581_global_gain / norm_total;
+  filter_stem_pre_l = filter_out_l * stem_pre_gain;
+  filter_stem_pre_r = filter_out_r * stem_pre_gain;
+  op1_stem_pre_l = (slider114 < 0.5 ? op1_sig * op1_pan_l : 0) * stem_pre_gain;
+  op1_stem_pre_r = (slider114 < 0.5 ? op1_sig * op1_pan_r : 0) * stem_pre_gain;
+  op2_stem_pre_l = (op2_to_filter_cached < 0.5 ? op2_sig * op2_pan_l : 0) * stem_pre_gain;
+  op2_stem_pre_r = (op2_to_filter_cached < 0.5 ? op2_sig * op2_pan_r : 0) * stem_pre_gain;
+  op3_stem_pre_l = ((op3_to_filter_cached < 0.5 && !voice3_off_cached) ? op3_audio_sig * op3_pan_l : 0) * stem_pre_gain;
+  op3_stem_pre_r = ((op3_to_filter_cached < 0.5 && !voice3_off_cached) ? op3_audio_sig * op3_pan_r : 0) * stem_pre_gain;
+
+  out_amp = sid_output_amp(op1_stem_pre_l); out_lp_op1_l += (out_amp-out_lp_op1_l)*out_lp_alpha; op1_stem_l=out_lp_op1_l-out_hp_x_op1_l+out_hp_r*out_hp_y_op1_l; out_hp_x_op1_l=out_lp_op1_l; out_hp_y_op1_l=op1_stem_l;
+  out_amp = sid_output_amp(op1_stem_pre_r); out_lp_op1_r += (out_amp-out_lp_op1_r)*out_lp_alpha; op1_stem_r=out_lp_op1_r-out_hp_x_op1_r+out_hp_r*out_hp_y_op1_r; out_hp_x_op1_r=out_lp_op1_r; out_hp_y_op1_r=op1_stem_r;
+  out_amp = sid_output_amp(op2_stem_pre_l); out_lp_op2_l += (out_amp-out_lp_op2_l)*out_lp_alpha; op2_stem_l=out_lp_op2_l-out_hp_x_op2_l+out_hp_r*out_hp_y_op2_l; out_hp_x_op2_l=out_lp_op2_l; out_hp_y_op2_l=op2_stem_l;
+  out_amp = sid_output_amp(op2_stem_pre_r); out_lp_op2_r += (out_amp-out_lp_op2_r)*out_lp_alpha; op2_stem_r=out_lp_op2_r-out_hp_x_op2_r+out_hp_r*out_hp_y_op2_r; out_hp_x_op2_r=out_lp_op2_r; out_hp_y_op2_r=op2_stem_r;
+  out_amp = sid_output_amp(op3_stem_pre_l); out_lp_op3_l += (out_amp-out_lp_op3_l)*out_lp_alpha; op3_stem_l=out_lp_op3_l-out_hp_x_op3_l+out_hp_r*out_hp_y_op3_l; out_hp_x_op3_l=out_lp_op3_l; out_hp_y_op3_l=op3_stem_l;
+  out_amp = sid_output_amp(op3_stem_pre_r); out_lp_op3_r += (out_amp-out_lp_op3_r)*out_lp_alpha; op3_stem_r=out_lp_op3_r-out_hp_x_op3_r+out_hp_r*out_hp_y_op3_r; out_hp_x_op3_r=out_lp_op3_r; out_hp_y_op3_r=op3_stem_r;
+  out_amp = sid_output_amp(filter_stem_pre_l); out_lp_filter_l += (out_amp-out_lp_filter_l)*out_lp_alpha; filter_stem_l=out_lp_filter_l-out_hp_x_filter_l+out_hp_r*out_hp_y_filter_l; out_hp_x_filter_l=out_lp_filter_l; out_hp_y_filter_l=filter_stem_l;
+  out_amp = sid_output_amp(filter_stem_pre_r); out_lp_filter_r += (out_amp-out_lp_filter_r)*out_lp_alpha; filter_stem_r=out_lp_filter_r-out_hp_x_filter_r+out_hp_r*out_hp_y_filter_r; out_hp_x_filter_r=out_lp_filter_r; out_hp_y_filter_r=filter_stem_r;
+  spl0=mix_l; spl1=mix_r;
+  spl2=op1_stem_l*master_gain; spl3=op1_stem_r*master_gain;
+  spl4=op2_stem_l*master_gain; spl5=op2_stem_r*master_gain;
+  spl6=op3_stem_l*master_gain; spl7=op3_stem_r*master_gain;
+  spl8=filter_stem_l*master_gain; spl9=filter_stem_r*master_gain;
+) : (
+  spl0 = mix_l; spl1 = mix_r;
+  spl2 = spl3 = spl4 = spl5 = spl6 = spl7 = spl8 = spl9 = 0;
+);
+);

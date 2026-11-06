@@ -19,3 +19,10 @@ GIT BASH
 git add . && git commit -m "Fix LSpectrum ReaPack Lua and JSFX folder mapping" && git push
 
 Dopo il push verifica che il workflow Update ReaPack Index riporti Status: Success e che index.xml contenga un solo pacchetto LSpectrum con tre sorgenti.
+
+NUOVI STRUMENTI JSFX
+- Biscot1 Synth: prima distribuzione ReaPack 2.29 (il sorgente contiene la dicitura TEST).
+- LWS-7: prima versione del pacchetto ReaPack 1.0 (numero di distribuzione).
+- I due file sono autonomi: non richiedono file Lua.
+- In GitHub Actions verificare sempre Status: Success e controllare index.xml.
+- Questa ZIP non contiene ne' .git ne' index.xml per NON sovrascrivere la cronologia locale o l'indice generato. Estrarre nella cartella gia' esistente senza cancellarla.
